@@ -1,0 +1,26 @@
+# Chainlink CRE Workflow Configuration for USDT/ILS Price Feed
+
+# Cron schedule for price updates
+# Format: "minute hour day month weekday"
+# Examples:
+#   "*/1 * * * *"  - Every 1 minute
+#   "*/5 * * * *"  - Every 5 minutes
+#   "0 * * * *"    - Every hour at minute 0
+schedule: "*/1 * * * *"
+
+# ExchangeRate-API key for USD/ILS rate
+# Get your free API key at: https://www.exchangerate-api.com/
+exchangeRateApiKey: "YOUR-API-KEY-HERE"
+
+# PriceFeedReceiver contract address (deployed contract)
+priceFeedReceiverAddress: "0x0000000000000000000000000000000000000000"
+
+# Chain selector name (network identifier)
+# Examples:
+#   "sepolia"          - Ethereum Sepolia testnet
+#   "ethereum-mainnet" - Ethereum Mainnet
+#   "arbitrum-sepolia" - Arbitrum Sepolia testnet
+chainSelectorName: "sepolia"
+
+# Gas limit for price update transactions
+gasLimit: "500000"
