@@ -37,7 +37,7 @@ A complete USDT-backed stablecoin system with automatic price feed updates via C
 │  ├─ Converts to 8 decimals                                     │
 │  └─ Submits to PriceFeedReceiver                               │
 │                                                                 │
-│  Schedule: Every 1 minute (configurable)                       │
+│  Schedule: Every 10-15 minutes (production - configurable)                       │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
                            ↓
@@ -96,23 +96,13 @@ A complete USDT-backed stablecoin system with automatic price feed updates via C
 | `temp.ts` | Reference implementation (rate calculation) | 176 |
 | `config.example.yaml` | Configuration template | 15 |
 
-### Documentation
 
-| File | Purpose |
-|------|---------|
-| `DEPLOYMENT.md` | Smart contract deployment guide |
-| `USDT_ILS_WORKFLOW.md` | Chainlink CRE workflow guide |
-| `SINGLE_FEED_ARCHITECTURE.md` | Single-feed design rationale |
-| `PAUSE_PROTECTION.md` | Security strategy for parameter updates |
-| `COMPLETE_SUMMARY.md` | This file |
-
----
 
 ## Test Results
 
 ### Smart Contracts
 
-✅ **All 55 tests passing**
+✅ **All 104 tests passing**
 
 #### PriceFeedReceiver (15 tests)
 - Initial state verification
@@ -133,6 +123,28 @@ A complete USDT-backed stablecoin system with automatic price feed updates via C
 - Preview functions
 - Collateral tracking
 - Edge cases
+
+#### FeeManagement (16 tests)
+- Fee configuration and updates
+- Mint with fees
+- Redeem with fees
+- Fee withdrawal
+- Access control
+
+#### Fuzz Tests (11 tests)
+- Random input testing (2,827 runs)
+- Edge case discovery
+- Decimal precision validation
+
+#### Invariant Tests (11 tests)
+- Stateful testing (128,000 operations)
+- Collateral invariants
+- Fee accounting
+
+#### Fork Tests (11 tests)
+- Real USDT integration
+- Multi-network testing
+-  account testing
 
 ---
 
@@ -180,56 +192,6 @@ forge script script/Deploy.s.sol:DeployScript \
   --etherscan-api-key $ETHERSCAN_API_KEY
 ```
 
-### Chainlink CRE Workflow Deployment
-
-```bash
-# 1. Install dependencies
-cd stable_coin && bun install
-
-# 2. Configure
-# Create config.json with your values
-
-# 3. Simulate locally
-cre workflow simulate ./
-
-# 4. Deploy to CRE
-# Follow Chainlink CRE deployment docs
-```
-
----
-
-## Gas Costs
-
-### Smart Contract Deployment
-
-| Operation | Gas Used | Cost @ 3 gwei |
-|-----------|----------|---------------|
-| Deploy PriceFeedReceiver | 1,400,000 | ~0.004 ETH |
-| Deploy LocalCurrencyToken | 3,100,000 | ~0.009 ETH |
-| Configure PriceFeedReceiver | 300,000 | ~0.001 ETH |
-| **Total Deployment** | **4,800,000** | **~0.014 ETH** |
-
-### Transaction Costs
-
-| Operation | Gas Used | Cost @ 20 gwei |
-|-----------|----------|----------------|
-| Mint | ~127,000 | ~0.0025 ETH |
-| Redeem | ~66,000 | ~0.0013 ETH |
-| Update Manual Rate | ~55,000 | ~0.0011 ETH |
-| Price Update (CRE) | ~60,000 | ~0.0012 ETH |
-
-### Monthly Operational Costs
-
-| Update Frequency | Updates/Month | Gas Cost @ 20 gwei |
-|-----------------|---------------|-------------------|
-| Every 1 minute | 43,200 | ~52 ETH (~$100,000) |
-| Every 5 minutes | 8,640 | ~10 ETH (~$20,000) |
-| Every 30 minutes | 1,440 | ~1.7 ETH (~$3,400) |
-| Every 1 hour | 720 | ~0.9 ETH (~$1,700) |
-
-**⚠️ Recommendation**: Use 30-minute or hourly updates for stable assets to minimize costs.
-
----
 
 ## Security Features
 
@@ -297,46 +259,6 @@ cast send $STABLE_COIN_ADDRESS "toggleUseOracle()" --rpc-url $RPC_URL --private-
 cast send $STABLE_COIN_ADDRESS "unpause()" --rpc-url $RPC_URL --private-key $PRIVATE_KEY
 ```
 
----
-
-## API Rate Limits & Costs
-
-### CoinGecko (Free)
-- **Rate**: 10-30 calls/minute
-- **Cost**: $0
-- **Key**: Not required
-
-### ExchangeRate-API
-
-| Plan | Requests/Month | Cost/Month |
-|------|---------------|------------|
-| Free | 1,500 | $0 |
-| Basic | 100,000 | $10 |
-| Pro | 1,500,000 | $60 |
-
-**⚠️ Warning**: 1-minute updates need 43,200 requests/month (Pro plan required).
-
----
-
-## Production Checklist
-
-### Before Mainnet Deployment
-
-- [ ] All tests passing (55/55)
-- [ ] Deployed to Sepolia testnet
-- [ ] Tested mint/redeem flows
-- [ ] Verified price updates from CRE
-- [ ] Tested pause/unpause
-- [ ] Tested rate fallback
-- [ ] Tested stale price detection
-- [ ] Gas costs reviewed
-- [ ] Update frequency finalized
-- [ ] API rate limits configured
-- [ ] Admin using multisig wallet
-- [ ] Monitoring/alerts set up
-- [ ] Operational procedures documented
-- [ ] Emergency contacts established
-- [ ] Audited (recommended for production)
 
 ---
 
@@ -345,65 +267,18 @@ cast send $STABLE_COIN_ADDRESS "unpause()" --rpc-url $RPC_URL --private-key $PRI
 ### 1. Single Feed Architecture
 - One PriceFeedReceiver per currency pair
 - Simpler, cheaper, safer than multi-feed
-- See: `SINGLE_FEED_ARCHITECTURE.md`
 
-### 2. Direct Balance Queries
-- No `totalCollateral` state variable
-- Uses `usdt.balanceOf(address(this))`
-- Prevents accounting issues from direct transfers
-
-### 3. Pause Protection
+### 2. Pause Protection
 - Critical functions require pause
 - Prevents front-running parameter changes
-- See: `PAUSE_PROTECTION.md`
 
-### 4. Oracle Fallback
+### 3. Oracle Fallback
 - Automatic fallback to manual rate
 - Stale data detection
 - Try/catch for oracle failures
-
-### 5. Toggle Pattern
-- `toggleUseOracle()` instead of `setUseOracle(bool)`
-- Simpler, less error-prone
-
----
-
-## Support & Troubleshooting
-
-### Common Issues
-
-1. **"Insufficient funds for gas"**
-   - Ensure deployer/workflow wallet has ETH
-
-2. **"Invalid address"**
-   - Use checksummed addresses
-   - Use `cast --to-checksum-address <addr>`
-
-3. **"Failed to write price report"**
-   - Verify PriceFeedReceiver configuration
-   - Check forwarder/workflow ID/author
-
-4. **Tests failing**
-   - Run `forge clean && forge build`
-   - Check Solidity version (0.8.20+)
-
-### Resources
-
-- **Chainlink CRE Docs**: https://docs.chain.link/cre
-- **Foundry Book**: https://book.getfoundry.sh
-- **OpenZeppelin Docs**: https://docs.openzeppelin.com
-
----
 
 ## License
 
 MIT
 
----
 
-## Contributors
-
-- Smart Contracts: Solidity 0.8.20+
-- Tests: Foundry
-- Workflow: Chainlink CRE SDK
-- Documentation: Complete system overview

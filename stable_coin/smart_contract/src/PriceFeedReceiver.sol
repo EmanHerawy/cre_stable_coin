@@ -59,30 +59,30 @@ contract PriceFeedReceiver is IReceiverTemplate, Ownable{
         bytes calldata report
     ) external override {
        // First check: Ensure the call is from a trusted KeystoneForwarder
-        // if (!s_keystoneForwarderAddresses[msg.sender]) {
-        //     revert InvalidSender(msg.sender);
-        // }
+        if (!s_keystoneForwarderAddresses[msg.sender]) {
+            revert InvalidSender(msg.sender);
+        }
 
-        // // Second check: Validate workflow ID
-        // bytes32 workflowId = _getWorkflowId(metadata);
-        // if (!s_expectedWorkflowIds[workflowId]) {
-        //     revert UnauthorizedWorkflow(workflowId);
-        // }
+        // Second check: Validate workflow ID
+        bytes32 workflowId = _getWorkflowId(metadata);
+        if (!s_expectedWorkflowIds[workflowId]) {
+            revert UnauthorizedWorkflow(workflowId);
+        }
 
-        // // Third check: Validate workflow owner - using parent's _decodeMetadata
-        // (address workflowOwner, bytes10 workflowName) = _decodeMetadata(metadata);
-        // if (!s_expectedAuthors[workflowOwner]) {
-        //     // Use first expected author as reference for error message
-        //     address expectedAuthorRef = s_expectedAuthorsList.length > 0 ? s_expectedAuthorsList[0] : address(0);
-        //     revert InvalidAuthor(workflowOwner, expectedAuthorRef);
-        // }
+        // Third check: Validate workflow owner - using parent's _decodeMetadata
+        (address workflowOwner, bytes10 workflowName) = _decodeMetadata(metadata);
+        if (!s_expectedAuthors[workflowOwner]) {
+            // Use first expected author as reference for error message
+            address expectedAuthorRef = s_expectedAuthorsList.length > 0 ? s_expectedAuthorsList[0] : address(0);
+            revert InvalidAuthor(workflowOwner, expectedAuthorRef);
+        }
 
-        // // Fourth check: Validate workflow name - using parent's _decodeMetadata
-        // if (!s_expectedWorkflowNames[workflowName]) {
-        //     // Use first expected workflow name as reference for error message
-        //     bytes10 expectedNameRef = s_expectedWorkflowNamesList.length > 0 ? s_expectedWorkflowNamesList[0] : bytes10(0);
-        //     revert InvalidWorkflowName(workflowName, expectedNameRef);
-        // }
+        // Fourth check: Validate workflow name - using parent's _decodeMetadata
+        if (!s_expectedWorkflowNames[workflowName]) {
+            // Use first expected workflow name as reference for error message
+            bytes10 expectedNameRef = s_expectedWorkflowNamesList.length > 0 ? s_expectedWorkflowNamesList[0] : bytes10(0);
+            revert InvalidWorkflowName(workflowName, expectedNameRef);
+        }
 
         // All validations passed, process the report
         _processReport(report);
