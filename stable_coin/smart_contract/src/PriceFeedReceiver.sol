@@ -37,12 +37,17 @@ contract PriceFeedReceiver is IReceiverTemplate, Ownable{
     error InvalidWorkflowId(bytes32 workflowId);
     error DuplicateValue();
     error NoDataPresent();
+    error NotFound();
 
     // Events
     event KeystoneForwarderAdded(address indexed forwarder);
+    event KeystoneForwarderRemoved(address indexed forwarder);
     event WorkflowIdAdded(bytes32 indexed workflowId);
+    event WorkflowIdRemoved(bytes32 indexed workflowId);
     event ExpectedAuthorAdded(address indexed author);
+    event ExpectedAuthorRemoved(address indexed author);
     event ExpectedWorkflowNameAdded(bytes10 indexed workflowName);
+    event ExpectedWorkflowNameRemoved(bytes10 indexed workflowName);
     event PriceUpdated(uint224 price, uint32 timestamp);
 
     /// @notice Constructor to initialize the contract with an owner
@@ -208,6 +213,102 @@ contract PriceFeedReceiver is IReceiverTemplate, Ownable{
     /// @return The number of authorized workflow names
     function getExpectedWorkflowNameCount() external view returns (uint256) {
         return s_expectedWorkflowNamesList.length;
+    }
+
+    /// @notice Removes a KeystoneForwarder address from the allowed list (owner only)
+    /// @param _forwarderAddress The KeystoneForwarder contract address to remove
+    function removeKeystoneForwarder(address _forwarderAddress) external onlyOwner {
+        if (!s_keystoneForwarderAddresses[_forwarderAddress]) {
+            revert NotFound();
+        }
+
+        // Remove from mapping
+        s_keystoneForwarderAddresses[_forwarderAddress] = false;
+
+        // Remove from array - find and swap with last element, then pop
+        for (uint256 i = 0; i < s_keystoneForwarderAddressesList.length; i++) {
+            if (s_keystoneForwarderAddressesList[i] == _forwarderAddress) {
+                s_keystoneForwarderAddressesList[i] = s_keystoneForwarderAddressesList[
+                    s_keystoneForwarderAddressesList.length - 1
+                ];
+                s_keystoneForwarderAddressesList.pop();
+                break;
+            }
+        }
+
+        emit KeystoneForwarderRemoved(_forwarderAddress);
+    }
+
+    /// @notice Removes an expected workflow ID from the allowed list (owner only)
+    /// @param _workflowId The workflow ID to remove
+    function removeExpectedWorkflowId(bytes32 _workflowId) external onlyOwner {
+        if (!s_expectedWorkflowIds[_workflowId]) {
+            revert NotFound();
+        }
+
+        // Remove from mapping
+        s_expectedWorkflowIds[_workflowId] = false;
+
+        // Remove from array - find and swap with last element, then pop
+        for (uint256 i = 0; i < s_expectedWorkflowIdsList.length; i++) {
+            if (s_expectedWorkflowIdsList[i] == _workflowId) {
+                s_expectedWorkflowIdsList[i] = s_expectedWorkflowIdsList[
+                    s_expectedWorkflowIdsList.length - 1
+                ];
+                s_expectedWorkflowIdsList.pop();
+                break;
+            }
+        }
+
+        emit WorkflowIdRemoved(_workflowId);
+    }
+
+    /// @notice Removes an expected workflow author from the allowed list (owner only)
+    /// @param _author The expected workflow owner address to remove
+    function removeExpectedAuthor(address _author) external onlyOwner {
+        if (!s_expectedAuthors[_author]) {
+            revert NotFound();
+        }
+
+        // Remove from mapping
+        s_expectedAuthors[_author] = false;
+
+        // Remove from array - find and swap with last element, then pop
+        for (uint256 i = 0; i < s_expectedAuthorsList.length; i++) {
+            if (s_expectedAuthorsList[i] == _author) {
+                s_expectedAuthorsList[i] = s_expectedAuthorsList[
+                    s_expectedAuthorsList.length - 1
+                ];
+                s_expectedAuthorsList.pop();
+                break;
+            }
+        }
+
+        emit ExpectedAuthorRemoved(_author);
+    }
+
+    /// @notice Removes an expected workflow name from the allowed list (owner only)
+    /// @param _workflowName The expected workflow name to remove
+    function removeExpectedWorkflowName(bytes10 _workflowName) external onlyOwner {
+        if (!s_expectedWorkflowNames[_workflowName]) {
+            revert NotFound();
+        }
+
+        // Remove from mapping
+        s_expectedWorkflowNames[_workflowName] = false;
+
+        // Remove from array - find and swap with last element, then pop
+        for (uint256 i = 0; i < s_expectedWorkflowNamesList.length; i++) {
+            if (s_expectedWorkflowNamesList[i] == _workflowName) {
+                s_expectedWorkflowNamesList[i] = s_expectedWorkflowNamesList[
+                    s_expectedWorkflowNamesList.length - 1
+                ];
+                s_expectedWorkflowNamesList.pop();
+                break;
+            }
+        }
+
+        emit ExpectedWorkflowNameRemoved(_workflowName);
     }
 
    }
