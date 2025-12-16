@@ -227,9 +227,7 @@ const updateUsdtIlsPrice = (runtime: Runtime<Config>): string => {
               try {
       
           const secret = runtime.getSecret({ id:'API_KEY'}).result();
-          console.log("secret",secret);
           exchangeRateApiKey = secret.value || '';
-		  console.log("exchangeRateApiKey",exchangeRateApiKey);
 		  
         } catch (secretError) {
           runtime.log(`Warning: Could not read API_KEY from secrets: ${secretError instanceof Error ? secretError.message : String(secretError)}`);
