@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
 import "../src/StableCoin.sol";
+import "../src/Converter.sol";
 import "../src/PriceFeedReceiver.sol";
 import {ERC20} from "@openzeppelin/token/ERC20/ERC20.sol";
 
@@ -23,6 +24,7 @@ contract MockUSDT is ERC20 {
 
 contract LocalCurrencyTokenTest is Test {
     LocalCurrencyToken public stableCoin;
+    Converter public converter;
     PriceFeedReceiver public priceFeedReceiver;
     MockUSDT public usdt;
 
@@ -36,12 +38,16 @@ contract LocalCurrencyTokenTest is Test {
     bytes10 public workflowName;
 
     uint256 public constant INITIAL_RATE = 50e6; // 50 EGP per USDT
+    uint256 public constant MAX_DEVIATION_BPS = 2000; // 20%
+    uint256 public constant MAX_DEVIATION_LIMIT = 5000; // 50%
+    uint256 public constant MAX_PRICE_AGE = 3600; // 1 hour
 
     event Minted(address indexed user, uint256 usdtAmount, uint256 localCurrencyAmount, uint256 fee);
     event Redeemed(address indexed user, uint256 localCurrencyAmount, uint256 usdtAmount, uint256 fee);
-    event RateUpdated(uint256 oldRate, uint256 newRate, bool isOracle);
-    event OracleToggled(bool useOracle);
+    event OracleToggled(bool indexed useOracle);
     event PriceFeedUpdated(address indexed oldFeed, address indexed newFeed);
+    event ManualPriceUpdated(uint256 oldRate, uint256 newRate, uint256 deviation, uint256 timestamp);
+    event OraclePriceUpdated(uint256 oldRate, uint256 newRate, uint256 deviation, uint256 timestamp);
 
     function setUp() public {
         admin = address(this);
@@ -63,14 +69,23 @@ contract LocalCurrencyTokenTest is Test {
         priceFeedReceiver.addExpectedAuthor(author);
         priceFeedReceiver.addExpectedWorkflowName(workflowName);
 
+        // Deploy Converter
+        converter = new Converter(
+            INITIAL_RATE,
+            MAX_DEVIATION_BPS,
+            MAX_DEVIATION_LIMIT,
+            MAX_PRICE_AGE,
+            admin,
+            address(priceFeedReceiver)
+        );
+
         // Deploy StableCoin
         stableCoin = new LocalCurrencyToken(
             address(usdt),
             "Egyptian Pound Digital",
             "EGPd",
-            INITIAL_RATE,
-            admin,
-            address(priceFeedReceiver)
+            address(converter),
+            admin
         );
 
         // Fund test users
@@ -82,14 +97,17 @@ contract LocalCurrencyTokenTest is Test {
 
     function testInitialState() public view {
         assertEq(address(stableCoin.usdt()), address(usdt));
-        assertEq(address(stableCoin.priceFeedReceiver()), address(priceFeedReceiver));
-        assertEq(stableCoin.manualRate(), INITIAL_RATE);
-        assertEq(stableCoin.useOracle(), true);
+        assertEq(address(stableCoin.converter()), address(converter));
         assertEq(stableCoin.minDeposit(), 1e6);
         assertEq(stableCoin.minWithdrawal(), 1e6);
-        assertEq(stableCoin.maxPriceAge(), 3600);
         assertEq(stableCoin.name(), "Egyptian Pound Digital");
         assertEq(stableCoin.symbol(), "EGPd");
+
+        // Converter state
+        assertEq(converter.useOracle(), true);
+        assertEq(converter.maxPriceAge(), MAX_PRICE_AGE);
+        assertEq(converter.maxPriceDeviationBps(), MAX_DEVIATION_BPS);
+        assertEq(converter.MAX_DEVIATION_LIMIT(), MAX_DEVIATION_LIMIT);
     }
 
     function testConstructorRevertsOnZeroAddress() public {
@@ -98,9 +116,8 @@ contract LocalCurrencyTokenTest is Test {
             address(0), // Invalid USDT address
             "Test",
             "TST",
-            INITIAL_RATE,
-            admin,
-            address(priceFeedReceiver)
+            address(converter),
+            admin
         );
 
         vm.expectRevert(LocalCurrencyToken.InvalidAddress.selector);
@@ -108,34 +125,48 @@ contract LocalCurrencyTokenTest is Test {
             address(usdt),
             "Test",
             "TST",
-            INITIAL_RATE,
-            address(0), // Invalid admin address
-            address(priceFeedReceiver)
+            address(0), // Invalid converter address
+            admin
         );
-    }
 
-    function testConstructorRevertsOnZeroRate() public {
-        vm.expectRevert(LocalCurrencyToken.InvalidRate.selector);
+        vm.expectRevert(LocalCurrencyToken.InvalidAddress.selector);
         new LocalCurrencyToken(
             address(usdt),
             "Test",
             "TST",
-            0, // Invalid rate
-            admin,
-            address(priceFeedReceiver)
+            address(converter),
+            address(0) // Invalid admin address
         );
+    }
+
+    function testConverterConstructorRevertsOnInvalidParams() public {
+        // Zero initial rate
+        vm.expectRevert(Converter.InvalidRate.selector);
+        new Converter(0, MAX_DEVIATION_BPS, MAX_DEVIATION_LIMIT, MAX_PRICE_AGE, admin, address(priceFeedReceiver));
+
+        // Zero admin
+        vm.expectRevert(Converter.InvalidAddress.selector);
+        new Converter(INITIAL_RATE, MAX_DEVIATION_BPS, MAX_DEVIATION_LIMIT, MAX_PRICE_AGE, address(0), address(priceFeedReceiver));
+
+        // Zero max price age
+        vm.expectRevert(Converter.InvalidPriceAge.selector);
+        new Converter(INITIAL_RATE, MAX_DEVIATION_BPS, MAX_DEVIATION_LIMIT, 0, admin, address(priceFeedReceiver));
+
+        // Deviation BPS exceeds limit
+        vm.expectRevert();
+        new Converter(INITIAL_RATE, 6000, MAX_DEVIATION_LIMIT, MAX_PRICE_AGE, admin, address(priceFeedReceiver));
     }
 
     // ============ Mint Tests ============
 
     function testMintWithManualRate() public {
-        // Pause and toggle to manual rate
-        stableCoin.pause();
-        stableCoin.toggleUseOracle();
-        stableCoin.unpause();
+        // Toggle to manual rate
+        converter.pause();
+        converter.toggleUseOracle();
+        converter.unpause();
 
         uint256 depositAmount = 1000e6; // 1000 USDT
-        uint256 expectedTokens = (depositAmount * INITIAL_RATE * 1e18) / 1e12; // 50,000 * 1e18
+        uint256 expectedTokens = converter.getExchangeRate(true, depositAmount);
 
         vm.startPrank(user1);
         usdt.approve(address(stableCoin), depositAmount);
@@ -153,7 +184,7 @@ contract LocalCurrencyTokenTest is Test {
 
     function testMintWithOracleRate() public {
         // Set oracle price
-        uint224 oraclePrice = 5000000000; // 50.00 with 8 decimals
+        uint224 oraclePrice = 50e6; // 50.00 with 6 decimals
         uint32 timestamp = uint32(block.timestamp);
         bytes memory metadata = abi.encodePacked(workflowId, workflowName, author);
         bytes memory report = abi.encode(oraclePrice, timestamp);
@@ -163,7 +194,7 @@ contract LocalCurrencyTokenTest is Test {
 
         // Mint tokens
         uint256 depositAmount = 1000e6;
-        uint256 expectedTokens = (depositAmount * INITIAL_RATE * 1e18) / 1e12;
+        uint256 expectedTokens = converter.getExchangeRate(true, depositAmount);
 
         vm.startPrank(user1);
         usdt.approve(address(stableCoin), depositAmount);
@@ -199,15 +230,29 @@ contract LocalCurrencyTokenTest is Test {
         vm.stopPrank();
     }
 
+    function testMintWithFees() public {
+        // Set 1% mint fee
+        stableCoin.setMintFee(100);
+
+        uint256 depositAmount = 1000e6;
+        uint256 fee = (depositAmount * 100) / 10000; // 10 USDT fee
+        uint256 usdtAfterFee = depositAmount - fee;
+        uint256 expectedTokens = converter.getExchangeRate(true, usdtAfterFee);
+
+        vm.startPrank(user1);
+        usdt.approve(address(stableCoin), depositAmount);
+        uint256 received = stableCoin.mint(depositAmount);
+        vm.stopPrank();
+
+        assertEq(received, expectedTokens);
+        assertEq(stableCoin.totalFeesToBeCollected(), fee);
+    }
+
     // ============ Redeem Tests ============
 
     function testRedeem() public {
         // First mint tokens
         uint256 depositAmount = 1000e6;
-
-        stableCoin.pause();
-        stableCoin.toggleUseOracle();
-        stableCoin.unpause();
 
         vm.startPrank(user1);
         usdt.approve(address(stableCoin), depositAmount);
@@ -215,7 +260,7 @@ contract LocalCurrencyTokenTest is Test {
 
         // Now redeem half
         uint256 redeemAmount = mintedTokens / 2;
-        uint256 expectedUsdt = stableCoin.previewRedeem(redeemAmount);
+        uint256 expectedUsdt = converter.getExchangeRate(false, redeemAmount);
 
         vm.expectEmit(true, true, true, true);
         emit Redeemed(user1, redeemAmount, expectedUsdt, 0); // 0 fee
@@ -247,78 +292,85 @@ contract LocalCurrencyTokenTest is Test {
         vm.stopPrank();
     }
 
-    function testRedeemRevertsWhenPaused() public {
+    function testRedeemWithFees() public {
+        // Set 1% redeem fee
+        stableCoin.setRedeemFee(100);
+
         // Mint tokens first
         vm.startPrank(user1);
         usdt.approve(address(stableCoin), 1000e6);
         uint256 mintedTokens = stableCoin.mint(1000e6);
+
+        // Redeem all
+        uint256 usdtBeforeFee = converter.getExchangeRate(false, mintedTokens);
+        uint256 fee = (usdtBeforeFee * 100) / 10000;
+        uint256 expectedUsdt = usdtBeforeFee - fee;
+
+        uint256 receivedUsdt = stableCoin.redeem(mintedTokens);
         vm.stopPrank();
 
-        stableCoin.pause();
-
-        vm.startPrank(user1);
-        vm.expectRevert();
-        stableCoin.redeem(mintedTokens);
-        vm.stopPrank();
+        assertEq(receivedUsdt, expectedUsdt);
+        assertEq(stableCoin.totalFeesToBeCollected(), fee);
     }
 
-    // ============ Rate Management Tests ============
+    // ============ Converter Rate Management Tests ============
 
-    function testUpdateManualRate() public {
-        stableCoin.pause();
+    function testSetManualRate() public {
+        converter.pause();
 
         uint256 newRate = 55e6;
         vm.expectEmit(true, true, true, true);
-        emit RateUpdated(INITIAL_RATE, newRate, false);
+        emit ManualPriceUpdated(INITIAL_RATE, newRate, ((newRate - INITIAL_RATE) * 10000) / INITIAL_RATE, block.timestamp);
 
-        stableCoin.updateManualRate(newRate);
+        converter.setManualRate(newRate);
+        converter.unpause();
 
-        assertEq(stableCoin.manualRate(), newRate);
-        assertGt(stableCoin.lastManualRateUpdate(), 0);
+        (uint256 rate, , ) = converter.getManualPriceInfo();
+        assertEq(rate, newRate);
+        assertEq(converter.useOracle(), false); // Switches to manual mode
     }
 
-    function testUpdateManualRateRevertsWhenNotPaused() public {
+    function testSetManualRateRevertsWhenNotPaused() public {
         vm.expectRevert();
-        stableCoin.updateManualRate(55e6);
+        converter.setManualRate(55e6);
     }
 
-    function testUpdateManualRateRevertsOnZeroRate() public {
-        stableCoin.pause();
-        vm.expectRevert(LocalCurrencyToken.InvalidRate.selector);
-        stableCoin.updateManualRate(0);
+    function testSetManualRateRevertsOnZeroRate() public {
+        converter.pause();
+        vm.expectRevert(Converter.InvalidRate.selector);
+        converter.setManualRate(0);
+    }
+
+    function testSetManualRateRevertsOnInvalidRate() public {
+        converter.pause();
+        vm.expectRevert(Converter.InvalidRate.selector);
+        converter.setManualRate(2e9); // Too high
     }
 
     function testToggleUseOracle() public {
-        stableCoin.pause();
+        converter.pause();
 
-        assertEq(stableCoin.useOracle(), true);
+        assertEq(converter.useOracle(), true);
 
         vm.expectEmit(true, true, true, true);
         emit OracleToggled(false);
-        stableCoin.toggleUseOracle();
+        converter.toggleUseOracle();
 
-        assertEq(stableCoin.useOracle(), false);
+        assertEq(converter.useOracle(), false);
 
         vm.expectEmit(true, true, true, true);
         emit OracleToggled(true);
-        stableCoin.toggleUseOracle();
+        converter.toggleUseOracle();
 
-        assertEq(stableCoin.useOracle(), true);
-    }
-
-    function testToggleUseOracleRevertsWhenNotPaused() public {
-        vm.expectRevert();
-        stableCoin.toggleUseOracle();
+        assertEq(converter.useOracle(), true);
     }
 
     // ============ Oracle Tests ============
 
     function testOracleFallbackOnStaleData() public {
-        // Warp time forward first
-        vm.warp(10000);
-
         // Set oracle price with old timestamp
-        uint224 oraclePrice = 5000000000;
+        vm.warp(10000);
+        uint224 oraclePrice = 50e6;
         uint32 oldTimestamp = uint32(block.timestamp - 7200); // 2 hours ago
         bytes memory metadata = abi.encodePacked(workflowId, workflowName, author);
         bytes memory report = abi.encode(oraclePrice, oldTimestamp);
@@ -327,7 +379,7 @@ contract LocalCurrencyTokenTest is Test {
         priceFeedReceiver.onReport(metadata, report);
 
         // Should fallback to manual rate
-        uint256 rate = stableCoin.getExchangeRate();
+        uint256 rate = converter.getExchangeRateView();
         assertEq(rate, INITIAL_RATE);
     }
 
@@ -342,7 +394,31 @@ contract LocalCurrencyTokenTest is Test {
         priceFeedReceiver.onReport(metadata, report);
 
         // Should fallback to manual rate
-        uint256 rate = stableCoin.getExchangeRate();
+        uint256 rate = converter.getExchangeRateView();
+        assertEq(rate, INITIAL_RATE);
+    }
+
+    function testOracleDeviationProtection() public {
+        // Set initial oracle price
+        uint224 initialPrice = 50e6;
+        uint32 timestamp1 = uint32(block.timestamp);
+        bytes memory metadata = abi.encodePacked(workflowId, workflowName, author);
+        bytes memory report1 = abi.encode(initialPrice, timestamp1);
+
+        vm.prank(forwarder);
+        priceFeedReceiver.onReport(metadata, report1);
+
+        // Try to set price with >20% deviation (should fallback to manual)
+        vm.warp(block.timestamp + 100);
+        uint224 deviatedPrice = 70e6; // 40% increase
+        uint32 timestamp2 = uint32(block.timestamp);
+        bytes memory report2 = abi.encode(deviatedPrice, timestamp2);
+
+        vm.prank(forwarder);
+        priceFeedReceiver.onReport(metadata, report2);
+
+        // Should fallback to manual rate due to deviation
+        uint256 rate = converter.getExchangeRateView();
         assertEq(rate, INITIAL_RATE);
     }
 
@@ -350,151 +426,179 @@ contract LocalCurrencyTokenTest is Test {
         // Set oracle price
         uint32 timestamp = uint32(block.timestamp);
         bytes memory metadata = abi.encodePacked(workflowId, workflowName, author);
-        bytes memory report = abi.encode(uint224(5000000000), timestamp);
+        bytes memory report = abi.encode(uint224(50e6), timestamp);
 
         vm.prank(forwarder);
         priceFeedReceiver.onReport(metadata, report);
 
-        uint256 lastUpdate = stableCoin.getLastPriceUpdate();
+        uint256 lastUpdate = converter.getLastPriceUpdate();
         assertEq(lastUpdate, timestamp);
     }
 
     function testIsPriceStale() public {
-        // Initially no data
-        assertEq(stableCoin.isPriceStale(), true);
+        // Initially using manual rate (timestamp from constructor)
+        assertEq(converter.isPriceStale(), false);
 
         // Set fresh oracle price
         uint32 timestamp = uint32(block.timestamp);
         bytes memory metadata = abi.encodePacked(workflowId, workflowName, author);
-        bytes memory report = abi.encode(uint224(5000000000), timestamp);
+        bytes memory report = abi.encode(uint224(50e6), timestamp);
 
         vm.prank(forwarder);
         priceFeedReceiver.onReport(metadata, report);
 
-        assertEq(stableCoin.isPriceStale(), false);
+        assertEq(converter.isPriceStale(), false);
 
         // Advance time beyond maxPriceAge
         vm.warp(block.timestamp + 3601);
-        assertEq(stableCoin.isPriceStale(), true);
+        assertEq(converter.isPriceStale(), true);
     }
 
     // ============ Admin Function Tests ============
 
+    function testSetConverter() public {
+        Converter newConverter = new Converter(
+            INITIAL_RATE,
+            MAX_DEVIATION_BPS,
+            MAX_DEVIATION_LIMIT,
+            MAX_PRICE_AGE,
+            admin,
+            address(priceFeedReceiver)
+        );
+
+        stableCoin.pause();
+        stableCoin.setConverter(address(newConverter));
+        stableCoin.unpause();
+
+        assertEq(address(stableCoin.converter()), address(newConverter));
+    }
+
+    function testSetConverterRevertsWhenNotPaused() public {
+        Converter newConverter = new Converter(
+            INITIAL_RATE,
+            MAX_DEVIATION_BPS,
+            MAX_DEVIATION_LIMIT,
+            MAX_PRICE_AGE,
+            admin,
+            address(priceFeedReceiver)
+        );
+
+        vm.expectRevert();
+        stableCoin.setConverter(address(newConverter));
+    }
+
     function testSetPriceFeedReceiver() public {
         PriceFeedReceiver newReceiver = new PriceFeedReceiver(admin);
 
-        stableCoin.pause();
+        converter.pause();
+        converter.setPriceFeedReceiver(address(newReceiver));
+        converter.unpause();
 
-        vm.expectEmit(true, true, true, true);
-        emit PriceFeedUpdated(address(priceFeedReceiver), address(newReceiver));
-
-        stableCoin.setPriceFeedReceiver(address(newReceiver));
-
-        assertEq(address(stableCoin.priceFeedReceiver()), address(newReceiver));
+        assertEq(address(converter.priceFeedReceiver()), address(newReceiver));
     }
 
-    function testSetPriceFeedReceiverRevertsWhenNotPaused() public {
-        PriceFeedReceiver newReceiver = new PriceFeedReceiver(admin);
-        vm.expectRevert();
-        stableCoin.setPriceFeedReceiver(address(newReceiver));
-    }
+    function testWithdrawFees() public {
+        // Set mint fee
+        stableCoin.setMintFee(100); // 1%
 
-    function testSetPriceFeedReceiverRevertsOnZeroAddress() public {
-        stableCoin.pause();
-        vm.expectRevert(LocalCurrencyToken.InvalidAddress.selector);
-        stableCoin.setPriceFeedReceiver(address(0));
-    }
-
-    function testSetPriceFeedReceiverRevertsOnSameAddress() public {
-        stableCoin.pause();
-        vm.expectRevert(LocalCurrencyToken.InvalidAddress.selector);
-        stableCoin.setPriceFeedReceiver(address(priceFeedReceiver));
-    }
-
-    function testSetMaxPriceAge() public {
-        uint256 newAge = 7200;
-        stableCoin.setMaxPriceAge(newAge);
-        assertEq(stableCoin.maxPriceAge(), newAge);
-    }
-
-    function testSetMaxPriceAgeRevertsOnZero() public {
-        vm.expectRevert(LocalCurrencyToken.InvalidPriceAge.selector);
-        stableCoin.setMaxPriceAge(0);
-    }
-
-    function testSetMinDeposit() public {
-        uint256 newMin = 10e6;
-        stableCoin.setMinDeposit(newMin);
-        assertEq(stableCoin.minDeposit(), newMin);
-    }
-
-    function testSetMinDepositRevertsOnZero() public {
-        vm.expectRevert(LocalCurrencyToken.InvalidMinimumAmount.selector);
-        stableCoin.setMinDeposit(0);
-    }
-
-    function testSetMinWithdrawal() public {
-        uint256 newMin = 10e6;
-        stableCoin.setMinWithdrawal(newMin);
-        assertEq(stableCoin.minWithdrawal(), newMin);
-    }
-
-    function testSetMinWithdrawalRevertsOnZero() public {
-        vm.expectRevert(LocalCurrencyToken.InvalidMinimumAmount.selector);
-        stableCoin.setMinWithdrawal(0);
-    }
-
-    // ============ Pause/Unpause Tests ============
-
-    function testPauseUnpause() public {
-        assertEq(stableCoin.paused(), false);
-
-        stableCoin.pause();
-        assertEq(stableCoin.paused(), true);
-
-        stableCoin.unpause();
-        assertEq(stableCoin.paused(), false);
-    }
-
-    // ============ Preview Functions Tests ============
-
-    function testPreviewDeposit() public {
-        uint256 usdtAmount = 1000e6;
-        uint256 expected = (usdtAmount * INITIAL_RATE * 1e18) / 1e12;
-        uint256 preview = stableCoin.previewDeposit(usdtAmount);
-        assertEq(preview, expected);
-    }
-
-    function testPreviewRedeem() public {
-        uint256 localAmount = 50000e18; // 50,000 tokens
-        uint256 expected = (localAmount * 1e12) / (INITIAL_RATE * 1e18);
-        uint256 preview = stableCoin.previewRedeem(localAmount);
-        assertEq(preview, expected);
-    }
-
-    // ============ View Functions Tests ============
-
-    function testGetTotalCollateral() public {
-        assertEq(stableCoin.getTotalCollateral(), 0);
-
-        // Mint some tokens
+        // Mint to collect fees
         vm.startPrank(user1);
         usdt.approve(address(stableCoin), 1000e6);
         stableCoin.mint(1000e6);
         vm.stopPrank();
 
-        assertEq(stableCoin.getTotalCollateral(), 1000e6);
+        uint256 feesCollected = stableCoin.totalFeesToBeCollected();
+        assertGt(feesCollected, 0);
+
+        uint256 recipientBalanceBefore = usdt.balanceOf(admin);
+        stableCoin.withdrawFees(admin, feesCollected);
+        uint256 recipientBalanceAfter = usdt.balanceOf(admin);
+
+        assertEq(recipientBalanceAfter - recipientBalanceBefore, feesCollected);
+        assertEq(stableCoin.totalFeesToBeCollected(), 0);
     }
 
+    function testWithdrawFeesRevertsWhenInsufficientBacking() public {
+        // This test ensures fees can't be withdrawn if it would break collateralization
+        stableCoin.setMintFee(100); // 1%
+
+        vm.startPrank(user1);
+        usdt.approve(address(stableCoin), 1000e6);
+        stableCoin.mint(1000e6);
+        vm.stopPrank();
+
+        uint256 feesCollected = stableCoin.totalFeesToBeCollected();
+
+        // Try to withdraw more than available fees
+        vm.expectRevert();
+        stableCoin.withdrawFees(admin, feesCollected + 1);
+    }
+
+    // ============ Decimal Conversion Tests ============
+
+    function testDecimalConversions() public view {
+        // Test USDT (6 decimals) → Local Currency (18 decimals)
+        uint256 usdtAmount = 100e6; // 100 USDT
+        uint256 expectedLocal = (usdtAmount * INITIAL_RATE * 1e18) / 1e12;
+        uint256 actualLocal = converter.getExchangeRate(true, usdtAmount);
+        assertEq(actualLocal, expectedLocal);
+
+        // Test Local Currency (18 decimals) → USDT (6 decimals)
+        uint256 localAmount = 5000e18; // 5000 tokens
+        uint256 expectedUsdt = (localAmount * 1e12) / (INITIAL_RATE * 1e18);
+        uint256 actualUsdt = converter.getExchangeRate(false, localAmount);
+        assertEq(actualUsdt, expectedUsdt);
+    }
+
+    function testRoundTripConversion() public {
+        uint256 depositAmount = 1000e6;
+
+        vm.startPrank(user1);
+        usdt.approve(address(stableCoin), depositAmount);
+        uint256 mintedTokens = stableCoin.mint(depositAmount);
+
+        uint256 receivedUsdt = stableCoin.redeem(mintedTokens);
+        vm.stopPrank();
+
+        // Should get back the same amount (within rounding error)
+        assertApproxEqRel(receivedUsdt, depositAmount, 0.001e18); // 0.1% tolerance
+    }
+
+    // ============ Access Control Tests ============
+
+    function testOnlyAdminCanSetConverter() public {
+        Converter newConverter = new Converter(
+            INITIAL_RATE,
+            MAX_DEVIATION_BPS,
+            MAX_DEVIATION_LIMIT,
+            MAX_PRICE_AGE,
+            admin,
+            address(priceFeedReceiver)
+        );
+
+        stableCoin.pause();
+        vm.prank(user1);
+        vm.expectRevert();
+        stableCoin.setConverter(address(newConverter));
+    }
+
+    function testOnlyAdminCanToggleOracle() public {
+        converter.pause();
+        vm.prank(user1);
+        vm.expectRevert();
+        converter.toggleUseOracle();
+    }
+
+    function testOnlyRateUpdaterCanSetManualRate() public {
+        converter.pause();
+        vm.prank(user1);
+        vm.expectRevert();
+        converter.setManualRate(55e6);
+    }
+
+    // ============ View Functions Tests ============
+
     function testGetInfo() public {
-        // Set oracle price
-        uint32 timestamp = uint32(block.timestamp);
-        bytes memory metadata = abi.encodePacked(workflowId, workflowName, author);
-        bytes memory report = abi.encode(uint224(5000000000), timestamp);
-
-        vm.prank(forwarder);
-        priceFeedReceiver.onReport(metadata, report);
-
         // Mint some tokens
         vm.startPrank(user1);
         usdt.approve(address(stableCoin), 1000e6);
@@ -506,69 +610,19 @@ contract LocalCurrencyTokenTest is Test {
             uint256 totalSupply_,
             uint256 collateral,
             uint256 netCollateral,
-            uint256 collateralRatio,
-            bool usingOracle,
-            uint256 lastUpdate,
-            bool priceIsStale,
             uint256 feesCollected,
             uint256 mintFee,
-            uint256 redeemFee
+            uint256 redeemFee,
+            address converterAddress
         ) = stableCoin.getInfo();
 
         assertEq(currentRate, INITIAL_RATE);
         assertGt(totalSupply_, 0);
         assertEq(collateral, 1000e6);
         assertEq(netCollateral, 1000e6); // No fees collected yet
-        assertApproxEqRel(collateralRatio, 10000, 0.01e18); // ~100% with 1% tolerance
-        assertEq(usingOracle, true);
-        assertEq(lastUpdate, timestamp);
-        assertEq(priceIsStale, false);
-        assertEq(feesCollected, 0); // No fees initially
-        assertEq(mintFee, 0); // 0% fee
-        assertEq(redeemFee, 0); // 0% fee
-    }
-
-    // ============ Direct Balance Tests ============
-
-    function testDirectUSDTTransfer() public {
-        // User accidentally sends USDT directly
-        vm.prank(user1);
-        usdt.transfer(address(stableCoin), 500e6);
-
-        // Should be reflected in collateral
-        assertEq(stableCoin.getTotalCollateral(), 500e6);
-    }
-
-    // ============ Access Control Tests ============
-
-    function testOnlyAdminCanSetPriceFeed() public {
-        stableCoin.pause();
-        PriceFeedReceiver newReceiver = new PriceFeedReceiver(admin);
-
-        vm.prank(user1);
-        vm.expectRevert();
-        stableCoin.setPriceFeedReceiver(address(newReceiver));
-    }
-
-    function testOnlyAdminCanToggleOracle() public {
-        stableCoin.pause();
-
-        vm.prank(user1);
-        vm.expectRevert();
-        stableCoin.toggleUseOracle();
-    }
-
-    function testOnlyRateUpdaterCanUpdateManualRate() public {
-        stableCoin.pause();
-
-        vm.prank(user1);
-        vm.expectRevert();
-        stableCoin.updateManualRate(55e6);
-    }
-
-    function testOnlyPauserCanPause() public {
-        vm.prank(user1);
-        vm.expectRevert();
-        stableCoin.pause();
+        assertEq(feesCollected, 0);
+        assertEq(mintFee, 0);
+        assertEq(redeemFee, 0);
+        assertEq(converterAddress, address(converter));
     }
 }

@@ -8,6 +8,7 @@ A complete USDT-backed stablecoin system with automatic price feed updates via C
 
 1. **Smart Contracts** (Solidity)
    - `PriceFeedReceiver.sol` - Receives price updates from Chainlink CRE
+   - `Converter.sol` - Rate management with oracle/manual fallback
    - `StableCoin.sol` (LocalCurrencyToken) - ERC20 stablecoin backed by USDT
 
 2. **Chainlink CRE Workflow** (TypeScript)
@@ -34,10 +35,10 @@ A complete USDT-backed stablecoin system with automatic price feed updates via C
 │  main.ts                                                        │
 │  ├─ Fetches USDT/USD and USD/ILS rates                         │
 │  ├─ Calculates USDT/ILS rate                                   │
-│  ├─ Converts to 8 decimals                                     │
+│  ├─ Converts to 6 decimals                                     │
 │  └─ Submits to PriceFeedReceiver                               │
 │                                                                 │
-│  Schedule: Every 10-15 minutes (production - configurable)                       │
+│  Schedule: Every 10-15 minutes (production - configurable)      │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
                            ↓
@@ -53,12 +54,20 @@ A complete USDT-backed stablecoin system with automatic price feed updates via C
 │                                                                 │
 │                    ↓                                            │
 │                                                                 │
+│  Converter.sol                                                  │
+│  ├─ Queries PriceFeedReceiver for oracle price (if configured) │
+│  ├─ Manages manual rate (admin controlled)                     │
+│  ├─ Automatic fallback if oracle stale or invalid              │
+│  ├─ Deviation checks and validation                            │
+│  └─ Provides conversion: USDT ↔ Local Currency                 │
+│                                                                 │
+│                    ↓                                            │
+│                                                                 │
 │  StableCoin.sol (LocalCurrencyToken)                            │
-│  ├─ Queries PriceFeedReceiver for price                        │
-│  ├─ Converts 8 decimals → 6 decimals                           │
-│  ├─ Mint: USDT → ILS tokens                                    │
-│  ├─ Redeem: ILS tokens → USDT                                  │
-│  └─ Fallback to manual rate if oracle stale                    │
+│  ├─ Queries Converter for exchange rate                        │
+│  ├─ Mint: USDT → local-currency tokens                         │
+│  ├─ Redeem: local-currency tokens → USDT                       │
+│  └─ Fee collection and management                              │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
                            ↓
@@ -68,7 +77,7 @@ A complete USDT-backed stablecoin system with automatic price feed updates via C
 │                                                                 │
 │  ├─ Deposit USDT, receive ILS tokens                           │
 │  ├─ Redeem ILS tokens, receive USDT                            │
-│  └─ Rate updates automatically every 1 minute                  │
+│  └─ Rate updates automatically every 10-15 minutes             │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -81,12 +90,16 @@ A complete USDT-backed stablecoin system with automatic price feed updates via C
 
 | File | Purpose | Lines |
 |------|---------|-------|
-| `src/PriceFeedReceiver.sol` | Receives & stores price updates from Chainlink CRE | 215 |
-| `src/StableCoin.sol` | USDT-backed ERC20 stablecoin | 423 |
-| `test/PriceFeedReceiver.t.sol` | Unit tests for PriceFeedReceiver | 176 |
-| `test/StableCoin.t.sol` | Unit tests for StableCoin | 542 |
-| `script/Deploy.s.sol` | Production deployment script | 184 |
-| `script/DeployTest.s.sol` | Test deployment with mock USDT | 146 |
+| `src/PriceFeedReceiver.sol` | Receives & stores price updates from Chainlink CRE | 320 |
+| `src/Converter.sol` | Rate management with oracle/manual fallback | 500+ |
+| `src/StableCoin.sol` | USDT-backed ERC20 stablecoin | 450+ |
+| `test/PriceFeedReceiver.t.sol` | Unit tests for PriceFeedReceiver | 180+ |
+| `test/Converter.t.sol` | Unit tests for Converter (42 tests) | 1200+ |
+| `test/StableCoin.t.sol` | Unit tests for StableCoin (30+ tests) | 900+ |
+| `test/Fuzz.t.sol` | Stateless fuzz tests (28 tests) | 700+ |
+| `test/Invariant.t.sol` | Stateful invariant tests (12 tests) | 400+ |
+| `script/Deploy.s.sol` | Production deployment script | 200+ |
+| `script/DeployTest.s.sol` | Test deployment with mock USDT | 130 |
 
 ### Chainlink CRE Workflow (`/stable_coin/`)
 
@@ -96,55 +109,57 @@ A complete USDT-backed stablecoin system with automatic price feed updates via C
 | `temp.ts` | Reference implementation (rate calculation) | 176 |
 | `config.example.yaml` | Configuration template | 15 |
 
-
+---
 
 ## Test Results
 
 ### Smart Contracts
 
-✅ **All 104 tests passing**
+✅ **All 135+ tests passing**
 
-#### PriceFeedReceiver (15 tests)
+#### PriceFeedReceiver (18 tests)
 - Initial state verification
 - Configuration management (forwarders, workflow IDs, authors, workflow names)
 - Duplicate prevention
 - Price report processing
 - Authorization checks
 - Access control
+- Remove functionality for security parameters
 
-#### StableCoin (40 tests)
+#### Converter (42 tests)
+- Manual rate management
+- Oracle integration
+- Fallback mechanisms
+- Deviation checks and validation
+- Price age verification
+- Oracle/manual mode switching
+- Admin controls
+- Edge cases and error handling
+
+#### StableCoin (30+ tests)
 - Constructor validation
-- Mint functionality (manual & oracle rates)
+- Mint functionality with Converter integration
 - Redeem functionality
-- Rate management
-- Oracle integration (price fetching, stale data fallback, zero price handling)
+- Fee management (mint & redeem fees)
+- Oracle integration through Converter
 - Pause/unpause mechanics
 - Admin functions with access control
-- Preview functions
 - Collateral tracking
 - Edge cases
 
-#### FeeManagement (16 tests)
-- Fee configuration and updates
-- Mint with fees
-- Redeem with fees
-- Fee withdrawal
-- Access control
-
-#### Fuzz Tests (11 tests)
-- Random input testing (2,827 runs)
+#### Fuzz Tests (28 tests)
+- Random input testing (10,000+ runs)
 - Edge case discovery
 - Decimal precision validation
+- Converter integration testing
+- Round-trip invariants
 
-#### Invariant Tests (11 tests)
-- Stateful testing (128,000 operations)
+#### Invariant Tests (12 tests)
+- Stateful testing (131,000 operations)
 - Collateral invariants
 - Fee accounting
-
-#### Fork Tests (11 tests)
-- Real USDT integration
-- Multi-network testing
--  account testing
+- Solvency checks
+- Converter rate stability
 
 ---
 
@@ -240,23 +255,25 @@ forge script script/Deploy.s.sol:DeployScript \
 ### Updating Manual Rate
 
 ```bash
-# 1. Pause
-cast send $STABLE_COIN_ADDRESS "pause()" --rpc-url $RPC_URL --private-key $PRIVATE_KEY
-
-# 2. Update rate (e.g., 3.65 ILS per USDT with 6 decimals)
-cast send $STABLE_COIN_ADDRESS "updateManualRate(uint256)" 3650000 --rpc-url $RPC_URL --private-key $PRIVATE_KEY
-
-# 3. Unpause
-cast send $STABLE_COIN_ADDRESS "unpause()" --rpc-url $RPC_URL --private-key $PRIVATE_KEY
+# Update manual rate in Converter (e.g., 50 EGP per USDT with 6 decimals)
+cast send $CONVERTER_ADDRESS "setManualRate(uint256)" 50000000 --rpc-url $RPC_URL --private-key $PRIVATE_KEY
 ```
 
 ### Switching Between Oracle and Manual
 
 ```bash
-# Pause → Toggle → Unpause
-cast send $STABLE_COIN_ADDRESS "pause()" --rpc-url $RPC_URL --private-key $PRIVATE_KEY
-cast send $STABLE_COIN_ADDRESS "toggleUseOracle()" --rpc-url $RPC_URL --private-key $PRIVATE_KEY
-cast send $STABLE_COIN_ADDRESS "unpause()" --rpc-url $RPC_URL --private-key $PRIVATE_KEY
+# Toggle oracle mode in Converter
+cast send $CONVERTER_ADDRESS "toggleUseOracle()" --rpc-url $RPC_URL --private-key $PRIVATE_KEY
+```
+
+### Updating Oracle Configuration
+
+```bash
+# Update max price age (e.g., 1 hour = 3600 seconds)
+cast send $CONVERTER_ADDRESS "setMaxPriceAge(uint256)" 3600 --rpc-url $RPC_URL --private-key $PRIVATE_KEY
+
+# Update max deviation (e.g., 20% = 2000 bps)
+cast send $CONVERTER_ADDRESS "setMaxPriceDeviationBps(uint256)" 2000 --rpc-url $RPC_URL --private-key $PRIVATE_KEY
 ```
 
 
@@ -264,18 +281,27 @@ cast send $STABLE_COIN_ADDRESS "unpause()" --rpc-url $RPC_URL --private-key $PRI
 
 ## Key Design Decisions
 
-### 1. Single Feed Architecture
+### 1. Three-Contract Architecture
+- **PriceFeedReceiver**: Receives oracle data from Chainlink CRE
+- **Converter**: Rate management with oracle/manual fallback
+- **StableCoin**: Token minting, redemption, and fee management
+- Separation of concerns for better security and upgradability
+
+### 2. Single Feed Architecture
 - One PriceFeedReceiver per currency pair
 - Simpler, cheaper, safer than multi-feed
 
-### 2. Pause Protection
-- Critical functions require pause
-- Prevents front-running parameter changes
+### 3. Oracle Fallback in Converter
+- Automatic fallback to manual rate when oracle is stale
+- Deviation checks when oracle is active
+- Manual rate always available (no deviation check in fallback)
+- Configurable max price age and max deviation
 
-### 3. Oracle Fallback
-- Automatic fallback to manual rate
-- Stale data detection
-- Try/catch for oracle failures
+### 4. Security Hardening
+- Removed DoS vulnerability in fallback path
+- Custom errors throughout (gas-efficient)
+- Comprehensive validation and access control
+- Reentrancy protection on all critical functions
 
 ## License
 

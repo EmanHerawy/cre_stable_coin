@@ -2,7 +2,9 @@
 
 ## Overview
 
-The StableCoin contract now includes a configurable fee system to cover Chainlink CRE costs and protocol maintenance. Fees are collected in USDT during mint and redeem operations.
+The StableCoin contract includes a configurable fee system to cover Chainlink CRE costs and protocol maintenance. Fees are collected in USDT during mint and redeem operations.
+
+**Note**: The fee system is managed by the LocalCurrencyToken (StableCoin) contract, while exchange rate management is handled by the separate Converter contract. This separation of concerns provides better security and modularity.
 
 ## Features
 
@@ -14,7 +16,7 @@ The StableCoin contract now includes a configurable fee system to cover Chainlin
 
 ### 2. **Fee Collection**
 - All fees are collected in **USDT**
-- Fees are automatically tracked in `totalFeesCollected`
+- Fees are automatically tracked in `totalFeesToBeCollected`
 - Fees are included in total collateral but excluded from net collateral
 
 ### 3. **Fee Withdrawal**
@@ -35,7 +37,7 @@ USDT used for minting: 990 USDT
 Tokens received: 990 USDT * rate = 3,190.77 ILS tokens
 
 // Fee stays in contract, tracked separately
-totalFeesCollected += 10 USDT
+totalFeesToBeCollected += 10 USDT
 ```
 
 ### Redeem with Fee
@@ -48,7 +50,7 @@ Fee collected: 4.95 USDT (0.5%)
 USDT sent to user: 985.05 USDT
 
 // Fee stays in contract
-totalFeesCollected += 4.95 USDT
+totalFeesToBeCollected += 4.95 USDT
 ```
 
 ## Admin Functions
@@ -78,26 +80,23 @@ function withdrawFees(address recipient, uint256 amount) external onlyRole(ADMIN
   - `amount`: Amount of USDT to withdraw
 - **Example**: `withdrawFees(treasury, 100e6)` withdraws 100 USDT to treasury
 - **Reverts if**:
-  - Amount > totalFeesCollected
+  - Amount > totalFeesToBeCollected
   - Recipient is zero address
   - Amount is zero
 
 ## View Functions
 
-### Get Fee Information
+### Get Fee and Collateral Information
 ```solidity
 function getInfo() external view returns (
     uint256 currentRate,
     uint256 totalSupply_,
     uint256 collateral,
-    uint256 netCollateral,  // New: excludes fees
-    uint256 collateralRatio,
-    bool usingOracle,
-    uint256 lastUpdate,
-    bool priceIsStale,
-    uint256 feesCollected,  // New: total fees
-    uint256 mintFee,        // New: mint fee bps
-    uint256 redeemFee       // New: redeem fee bps
+    uint256 netCollateral,
+    uint256 feesCollected,
+    uint256 mintFee,
+    uint256 redeemFee,
+    address converterAddress
 )
 ```
 
@@ -216,7 +215,7 @@ stableCoin.setMintFee(50);  // 0.5%
 stableCoin.setRedeemFee(0); // No redeem fee
 
 // At end of month, withdraw for CRE payment
-stableCoin.withdrawFees(crePaymentAddress, stableCoin.totalFeesCollected());
+stableCoin.withdrawFees(crePaymentAddress, stableCoin.totalFeesToBeCollected());
 ```
 
 ### 2. **Protocol Revenue**
@@ -256,7 +255,7 @@ All fees are calculated in USDT (6 decimals):
 ## Best Practices
 
 1. **Start with low fees**: Begin with 0.1-0.5% and adjust based on actual costs
-2. **Monitor fee collection**: Regularly check `totalFeesCollected`
+2. **Monitor fee collection**: Regularly check `totalFeesToBeCollected`
 3. **Transparent communication**: Inform users of fee changes
 4. **Regular withdrawals**: Don't let fees accumulate excessively
 5. **Fee budgeting**: Calculate fees needed to cover CRE costs

@@ -3,6 +3,8 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
 import "../src/StableCoin.sol";
+import "../src/Converter.sol";
+import "../src/PriceFeedReceiver.sol";
 import "@openzeppelin/token/ERC20/ERC20.sol";
 
 contract MockUSDT is ERC20 {
@@ -21,11 +23,12 @@ contract MockUSDT is ERC20 {
 
 /**
  * @title StableCoinHandler
- * @notice Handler contract for stateful fuzzing
+ * @notice Handler contract for stateful fuzzing with refactored architecture
  * @dev Performs random sequences of operations while tracking state
  */
 contract StableCoinHandler is Test {
     LocalCurrencyToken public stableCoin;
+    Converter public converter;
     MockUSDT public usdt;
     address public admin;
 
@@ -54,8 +57,9 @@ contract StableCoinHandler is Test {
         vm.stopPrank();
     }
 
-    constructor(LocalCurrencyToken _stableCoin, MockUSDT _usdt, address _admin) {
+    constructor(LocalCurrencyToken _stableCoin, Converter _converter, MockUSDT _usdt, address _admin) {
         stableCoin = _stableCoin;
+        converter = _converter;
         usdt = _usdt;
         admin = _admin;
 
@@ -96,16 +100,16 @@ contract StableCoinHandler is Test {
 
         if (redeemAmount == 0) return;
 
-        uint256 previewUsdt = stableCoin.previewRedeem(redeemAmount);
-        if (previewUsdt < stableCoin.minWithdrawal()) return;
+        // Check if the redeem will meet minimum withdrawal
+        uint256 previewUsdt = converter.getExchangeRate(false, redeemAmount);
+        uint256 fee = (previewUsdt * stableCoin.redeemFeeBps()) / 10000;
+        uint256 usdtAfterFee = previewUsdt - fee;
+
+        if (usdtAfterFee < stableCoin.minWithdrawal()) return;
 
         try stableCoin.redeem(redeemAmount) returns (uint256 usdtAmount) {
             ghost_redeemSum += usdtAmount;
             ghost_redeemCount++;
-
-            // Track fees
-            uint256 usdtBeforeFee = stableCoin.previewRedeem(redeemAmount);
-            uint256 fee = (usdtBeforeFee * stableCoin.redeemFeeBps()) / 10000;
             ghost_feesCollectedSum += fee;
         } catch {
             // Redeem failed, that's ok
@@ -135,11 +139,12 @@ contract StableCoinHandler is Test {
     }
 
     function withdrawFees(uint256 withdrawPercent) external countCall("withdrawFees") {
-        uint256 feesAvailable = stableCoin.totalFeesCollected();
+        uint256 feesAvailable = stableCoin.totalFeesToBeCollected();
         if (feesAvailable == 0) return;
 
         withdrawPercent = bound(withdrawPercent, 1, 100);
         uint256 withdrawAmount = (feesAvailable * withdrawPercent) / 100;
+        if (withdrawAmount == 0) return;
 
         vm.prank(admin);
         try stableCoin.withdrawFees(admin, withdrawAmount) {
@@ -170,37 +175,57 @@ contract StableCoinHandler is Test {
     function getRequiredCollateral() public view returns (uint256) {
         uint256 supply = stableCoin.totalSupply();
         if (supply == 0) return 0;
-        return stableCoin.previewRedeem(supply);
+        return converter.getExchangeRate(false, supply);
     }
 }
 
 /**
- * @title InvariantTest
- * @notice Stateful fuzz tests that maintain critical system invariants
+ * @title InvariantRefactoredTest
+ * @notice Stateful fuzz tests for the refactored architecture
+ * @dev Tests critical invariants with Converter contract
  */
-contract InvariantTest is Test {
+contract InvariantRefactoredTest is Test {
     LocalCurrencyToken public stableCoin;
+    Converter public converter;
+    PriceFeedReceiver public priceFeedReceiver;
     MockUSDT public usdt;
     StableCoinHandler public handler;
 
     address public admin = address(1);
 
-    uint256 constant INITIAL_RATE = 3_223_000; // 3.223 ILS per USDT
+    uint256 constant INITIAL_RATE = 50e6; // 50 units per USDT
+    uint256 constant MAX_DEVIATION_BPS = 2000; // 20%
+    uint256 constant MAX_DEVIATION_LIMIT = 5000; // 50%
+    uint256 constant MAX_PRICE_AGE = 3600; // 1 hour
 
     function setUp() public {
         usdt = new MockUSDT();
 
+        // Deploy PriceFeedReceiver (not configured, will use manual mode)
+        priceFeedReceiver = new PriceFeedReceiver(admin);
+
+        // Deploy Converter
+        vm.prank(admin);
+        converter = new Converter(
+            INITIAL_RATE,
+            MAX_DEVIATION_BPS,
+            MAX_DEVIATION_LIMIT,
+            MAX_PRICE_AGE,
+            admin,
+            address(0) // No oracle for invariant tests
+        );
+
+        // Deploy StableCoin
         vm.prank(admin);
         stableCoin = new LocalCurrencyToken(
             address(usdt),
-            "Palestinian Shekel Digital",
-            "PLSd",
-            INITIAL_RATE,
-            admin,
-            address(0)
+            "Test Currency",
+            "TEST",
+            address(converter),
+            admin
         );
 
-        handler = new StableCoinHandler(stableCoin, usdt, admin);
+        handler = new StableCoinHandler(stableCoin, converter, usdt, admin);
 
         // Target handler for invariant testing
         targetContract(address(handler));
@@ -241,7 +266,7 @@ contract InvariantTest is Test {
     function invariant_CollateralAccounting() public view {
         uint256 totalCollateral = stableCoin.getTotalCollateral();
         uint256 netCollateral = stableCoin.getNetCollateral();
-        uint256 feesCollected = stableCoin.totalFeesCollected();
+        uint256 feesCollected = stableCoin.totalFeesToBeCollected();
 
         assertEq(
             totalCollateral,
@@ -253,7 +278,7 @@ contract InvariantTest is Test {
     /// @notice INVARIANT 3: Fees collected should never exceed total collateral
     function invariant_FeesWithinCollateral() public view {
         uint256 totalCollateral = stableCoin.getTotalCollateral();
-        uint256 feesCollected = stableCoin.totalFeesCollected();
+        uint256 feesCollected = stableCoin.totalFeesToBeCollected();
 
         assertLe(
             feesCollected,
@@ -262,10 +287,10 @@ contract InvariantTest is Test {
         );
     }
 
-    /// @notice INVARIANT 4: Net collateral should never be negative (using uint, but check underflow)
+    /// @notice INVARIANT 4: Net collateral should never be negative
     function invariant_NetCollateralNonNegative() public view {
         uint256 totalCollateral = stableCoin.getTotalCollateral();
-        uint256 feesCollected = stableCoin.totalFeesCollected();
+        uint256 feesCollected = stableCoin.totalFeesToBeCollected();
 
         // This should never underflow if accounting is correct
         uint256 netCollateral = stableCoin.getNetCollateral();
@@ -299,7 +324,7 @@ contract InvariantTest is Test {
         );
     }
 
-    /// @notice INVARIANT 6: Solvency - Contract can always pay out all users (excluding fees)
+    /// @notice INVARIANT 6: Solvency - Contract can always pay out all users
     function invariant_Solvency() public view {
         uint256 totalSupply = handler.getTotalSupply();
 
@@ -316,9 +341,9 @@ contract InvariantTest is Test {
         }
     }
 
-    /// @notice INVARIANT 7: Exchange rate remains constant (no oracle in test setup)
+    /// @notice INVARIANT 7: Exchange rate remains constant (manual mode in tests)
     function invariant_ExchangeRateStable() public view {
-        uint256 currentRate = stableCoin.getExchangeRate();
+        uint256 currentRate = converter.getExchangeRateView();
         assertEq(
             currentRate,
             INITIAL_RATE,
@@ -336,7 +361,7 @@ contract InvariantTest is Test {
         assertLe(redeemFee, maxFee, "INVARIANT VIOLATED: Redeem fee exceeds maximum");
     }
 
-    /// @notice INVARIANT 9: Collateral ratio should be approximately 100% (allowing for fees)
+    /// @notice INVARIANT 9: Collateral ratio approximately 100%
     function invariant_CollateralRatio() public view {
         uint256 totalSupply = handler.getTotalSupply();
 
@@ -373,6 +398,29 @@ contract InvariantTest is Test {
         }
     }
 
+    /// @notice INVARIANT 11: Converter always returns valid rates
+    function invariant_ConverterRatesValid() public view {
+        uint256 rate = converter.getExchangeRateView();
+        assertGt(rate, 0, "INVARIANT VIOLATED: Exchange rate is zero");
+        assertLt(rate, 1e9, "INVARIANT VIOLATED: Exchange rate overflow");
+    }
+
+    /// @notice INVARIANT 12: Round-trip conversion preserves value
+    function invariant_RoundTripConversion() public view {
+        // Test with standard amount
+        uint256 usdtAmount = 1000e6;
+        uint256 localAmount = converter.getExchangeRate(true, usdtAmount);
+        uint256 backToUsdt = converter.getExchangeRate(false, localAmount);
+
+        // Should be within 1% tolerance due to rounding
+        assertApproxEqRel(
+            backToUsdt,
+            usdtAmount,
+            0.01e18,
+            "INVARIANT VIOLATED: Round-trip conversion loses value"
+        );
+    }
+
     // ============ Statistics and Logging ============
 
     function invariant_callSummary() public view {
@@ -386,7 +434,7 @@ contract InvariantTest is Test {
         console.log("\n=== Ghost Variables ===");
         console.log("Total deposited:", handler.ghost_depositSum());
         console.log("Total redeemed:", handler.ghost_redeemSum());
-        console.log("Total fees collected:", handler.ghost_feesCollectedSum());
+        console.log("Total fees collected (tracked):", handler.ghost_feesCollectedSum());
         console.log("Mint count:", handler.ghost_mintCount());
         console.log("Redeem count:", handler.ghost_redeemCount());
 
@@ -394,8 +442,13 @@ contract InvariantTest is Test {
         console.log("Total supply:", stableCoin.totalSupply());
         console.log("Total collateral:", stableCoin.getTotalCollateral());
         console.log("Net collateral:", stableCoin.getNetCollateral());
-        console.log("Fees collected:", stableCoin.totalFeesCollected());
+        console.log("Fees collected:", stableCoin.totalFeesToBeCollected());
         console.log("Mint fee (bps):", stableCoin.mintFeeBps());
         console.log("Redeem fee (bps):", stableCoin.redeemFeeBps());
+
+        console.log("\n=== Converter State ===");
+        console.log("Exchange rate:", converter.getExchangeRateView());
+        console.log("Using oracle:", converter.useOracle());
+        console.log("Price stale:", converter.isPriceStale());
     }
 }

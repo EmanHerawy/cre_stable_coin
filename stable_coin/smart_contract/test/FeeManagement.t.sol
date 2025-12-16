@@ -3,6 +3,8 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
 import "../src/StableCoin.sol";
+import "../src/Converter.sol";
+import "../src/PriceFeedReceiver.sol";
 import "@openzeppelin/token/ERC20/ERC20.sol";
 
 contract MockUSDT is ERC20 {
@@ -22,6 +24,8 @@ contract MockUSDT is ERC20 {
  */
 contract FeeManagementTest is Test {
     LocalCurrencyToken public stableCoin;
+    Converter public converter;
+    PriceFeedReceiver public priceFeedReceiver;
     MockUSDT public usdt;
 
     address public admin = address(1);
@@ -35,15 +39,29 @@ contract FeeManagementTest is Test {
         // Deploy mock USDT
         usdt = new MockUSDT();
 
-        // Deploy stablecoin
+        // Deploy PriceFeedReceiver (with admin as owner)
+        vm.prank(admin);
+        priceFeedReceiver = new PriceFeedReceiver(admin);
+
+        // Deploy Converter with manual rate
+        vm.prank(admin);
+        converter = new Converter(
+            INITIAL_RATE,      // manual rate
+            2000,              // 20% max deviation
+            5000,              // 50% hard cap
+            3600,              // 1 hour max price age
+            admin,             // owner
+            address(priceFeedReceiver)
+        );
+
+        // Deploy stablecoin with Converter
         vm.prank(admin);
         stableCoin = new LocalCurrencyToken(
             address(usdt),
             "Palestinian Shekel Digital",
             "PLSd",
-            INITIAL_RATE,
-            admin,
-            address(0) // No oracle, use manual rate
+            address(converter),
+            admin
         );
 
         // Fund users with USDT
@@ -96,11 +114,11 @@ contract FeeManagementTest is Test {
         vm.stopPrank();
 
         // Check tokens received based on amount after fee
-        uint256 expectedIls = stableCoin.previewDeposit(expectedUsdtAfterFee);
+        uint256 expectedIls = converter.getExchangeRate(true, expectedUsdtAfterFee);
         assertEq(ilsReceived, expectedIls);
 
         // Check fees collected
-        assertEq(stableCoin.totalFeesCollected(), expectedFee);
+        assertEq(stableCoin.totalFeesToBeCollected(), expectedFee);
 
         // Check total collateral includes fees
         assertEq(stableCoin.getTotalCollateral(), depositAmount);
@@ -119,11 +137,11 @@ contract FeeManagementTest is Test {
         vm.stopPrank();
 
         // Should receive full amount
-        uint256 expectedIls = stableCoin.previewDeposit(depositAmount);
+        uint256 expectedIls = converter.getExchangeRate(true, depositAmount);
         assertEq(ilsReceived, expectedIls);
 
         // No fees collected
-        assertEq(stableCoin.totalFeesCollected(), 0);
+        assertEq(stableCoin.totalFeesToBeCollected(), 0);
     }
 
     // ============ Redeem Fee Tests ============
@@ -142,7 +160,7 @@ contract FeeManagementTest is Test {
 
         // Redeem half
         uint256 redeemAmount = ilsReceived / 2;
-        uint256 usdtBeforeFee = stableCoin.previewRedeem(redeemAmount);
+        uint256 usdtBeforeFee = converter.getExchangeRate(false, redeemAmount);
         uint256 expectedFee = (usdtBeforeFee * 200) / 10000; // 2%
         uint256 expectedUsdtAfterFee = usdtBeforeFee - expectedFee;
 
@@ -153,7 +171,7 @@ contract FeeManagementTest is Test {
         assertEq(usdtReceived, expectedUsdtAfterFee);
 
         // Check fees collected
-        assertEq(stableCoin.totalFeesCollected(), expectedFee);
+        assertEq(stableCoin.totalFeesToBeCollected(), expectedFee);
     }
 
     // ============ Fee Withdrawal Tests ============
@@ -168,7 +186,7 @@ contract FeeManagementTest is Test {
         stableCoin.mint(1000e6); // Fee = 10 USDT
         vm.stopPrank();
 
-        uint256 feesCollected = stableCoin.totalFeesCollected();
+        uint256 feesCollected = stableCoin.totalFeesToBeCollected();
         assertEq(feesCollected, 10e6);
 
         // Withdraw fees
@@ -179,7 +197,7 @@ contract FeeManagementTest is Test {
         assertEq(usdt.balanceOf(feeRecipient), feesCollected);
 
         // Check fees tracking updated
-        assertEq(stableCoin.totalFeesCollected(), 0);
+        assertEq(stableCoin.totalFeesToBeCollected(), 0);
     }
 
     function testWithdrawPartialFees() public {
@@ -198,7 +216,7 @@ contract FeeManagementTest is Test {
         stableCoin.withdrawFees(feeRecipient, withdrawAmount);
 
         assertEq(usdt.balanceOf(feeRecipient), withdrawAmount);
-        assertEq(stableCoin.totalFeesCollected(), 5e6);
+        assertEq(stableCoin.totalFeesToBeCollected(), 5e6);
     }
 
     function testCannotWithdrawMoreThanCollected() public {
@@ -242,10 +260,10 @@ contract FeeManagementTest is Test {
         vm.stopPrank();
 
         // Check fees from mint
-        assertEq(stableCoin.totalFeesCollected(), mintFee);
+        assertEq(stableCoin.totalFeesToBeCollected(), mintFee);
 
         // User redeems all tokens
-        uint256 usdtBeforeFee = stableCoin.previewRedeem(ilsReceived);
+        uint256 usdtBeforeFee = converter.getExchangeRate(false, ilsReceived);
         uint256 redeemFee = (usdtBeforeFee * 50) / 10000;
 
         vm.prank(user1);
@@ -253,14 +271,14 @@ contract FeeManagementTest is Test {
 
         // Total fees should be mint fee + redeem fee
         uint256 totalFees = mintFee + redeemFee;
-        assertEq(stableCoin.totalFeesCollected(), totalFees);
+        assertEq(stableCoin.totalFeesToBeCollected(), totalFees);
 
         // Withdraw all fees
         vm.prank(admin);
         stableCoin.withdrawFees(feeRecipient, totalFees);
 
         assertEq(usdt.balanceOf(feeRecipient), totalFees);
-        assertEq(stableCoin.totalFeesCollected(), 0);
+        assertEq(stableCoin.totalFeesToBeCollected(), 0);
     }
 
     function testCollateralRatioWithFees() public {
@@ -281,11 +299,14 @@ contract FeeManagementTest is Test {
             uint256 totalSupply_,
             uint256 totalCollateral,
             uint256 netCollateral,
-            uint256 collateralRatio,
-            ,,,
             uint256 feesCollected,
             ,
+            ,
+            
         ) = stableCoin.getInfo();
+
+        uint256 requiredCollateral = converter.getExchangeRate(false, totalSupply_);
+        uint256 collateralRatio = (netCollateral * 10000) / requiredCollateral;
 
         // Verify accounting
         assertEq(totalCollateral, depositAmount); // Includes fees

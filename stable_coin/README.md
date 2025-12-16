@@ -138,14 +138,15 @@ Create or update your `config.json`:
 └─────────────────────────────────────────────────────────────┘
                            ↓
 ┌─────────────────────────────────────────────────────────────┐
-│ LocalCurrencyToken (StableCoin) Contract                    │
+│ On-Chain Rate Flow                                        │
 ├─────────────────────────────────────────────────────────────┤
 │                                                             │
-│  When user mints/redeems:                                  │
-│  1. Calls priceFeedReceiver.getPrice()                     │
-│  2. Gets (365073000, 1234567890)                           │
-│  3. Converts 8 decimals → 6 decimals: 3650730              │
-│  4. Uses for mint/redeem calculations                      │
+│  1. LocalCurrencyToken (StableCoin) calls Converter        │
+│     - mint/redeem use `converter.getExchangeRate(...)`    │
+│  2. Converter queries PriceFeedReceiver (oracle mode)      │
+│     - or uses its manual rate fallback                     │
+│  3. Converter returns a 6-decimal rate to StableCoin       │
+│  4. StableCoin uses that rate for mint/redeem math         │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
 ```

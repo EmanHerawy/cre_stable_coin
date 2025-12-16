@@ -6,58 +6,106 @@ import "@openzeppelin/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/access/AccessControl.sol";
 import "@openzeppelin/utils/Pausable.sol";
 import "@openzeppelin/utils/ReentrancyGuard.sol";
-import "./PriceFeedReceiver.sol";
+import "./Converter.sol";
 
 /**
  * @title LocalCurrencyToken
  * @dev Digital representation of local currency backed by USDT
  * 
- * Example: Egyptian Pound (EGP) Digital Token
+ * ═══════════════════════════════════════════════════════════════════════════════
+ * EXAMPLE WORKFLOW: Egyptian Pound (EGP) Digital Token
+ * ═══════════════════════════════════════════════════════════════════════════════
+ * ## 🔐 Design Decisions
+
+ * ### 1. Manual Price Fallback
+
+ * Decision: No deviation check in fallback path
+ * Rationale: Prevents DoS when oracle fails
+ * Trade-off: Requires admin to keep manual rate updated
+ * Mitigation: Admin is trusted role, event logging for transparency
+ 
+ * ### 2. 6-Decimal Rates
+
+ * Decision: All rates use 6 decimals internally
+ * Rationale: Matches USDT decimals, simplifies calculations
+ * Trade-off: Rate precision limited to 6 decimals
+ *Mitigation: Sufficient for currency rates (e.g., 50.123456 EGP/USDT)
+
+* ### 3. Converter Separation
+
+* Decision: Separate Converter contract for rate management
+* Rationale: Modularity, upgradability, testability
+* Trade-off: Additional deployment complexity
+* Mitigation: Comprehensive deployment scripts and tests
+
+* ## 📝 Known Limitations
+
+* 1.  Admin is trusted to set accurate manual rates
+* 2.  Assumes CRE oracle provides 6-decimal rates
+* 3.  Assumes USDT has 6 decimals
+* 4.  Small rounding errors (<0.1%) in conversions
+ * ARCHITECTURE:
+ * -------------
+ * This contract delegates ALL rate management to the Converter contract:
+ * - Oracle integration
+ * - Manual rate updates
+ * - Deviation protection
+ * - Price staleness checks
  * 
- * How it works:
- * 1. User deposits 100 USDT
- * 2. Oracle provides rate: 1 USDT = 50 EGP
- * 3. User receives 5000 EGP tokens
- * 4. User can redeem anytime at current rate
+ * MINTING (USDT → Local Currency):
+ * --------------------------------
+ * 1. User deposits 100 USDT (6 decimals)
+ * 2. Converter provides rate: 1 USDT = 50 EGP
+ * 3. Calculation: 100 USDT × 50 rate = 5,000 EGP
+ * 4. User receives 5,000 EGP tokens (18 decimals)
  * 
- * Rate updates via Chainlink oracle or admin
+ * REDEEMING (Local Currency → USDT):
+ * ----------------------------------
+ * 1. User redeems 5,000 EGP tokens
+ * 2. Converter provides rate: 1 USDT = 50 EGP
+ * 3. Calculation: 5,000 EGP ÷ 50 rate = 100 USDT
+ * 4. User receives 100 USDT (6 decimals)
+ * 
+ * ═══════════════════════════════════════════════════════════════════════════════
  */
-
-
 
 contract LocalCurrencyToken is ERC20, AccessControl, Pausable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
-    // ============ Roles ============
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ROLES
+    // ═══════════════════════════════════════════════════════════════════════════
 
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
-    bytes32 public constant RATE_UPDATER_ROLE = keccak256("RATE_UPDATER_ROLE");
 
-    // ============ State Variables ============
+    // ═══════════════════════════════════════════════════════════════════════════
+    // STATE VARIABLES
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Core Dependencies
+    // ─────────────────────────────────────────────────────────────────────────
 
     /// @notice USDT token (collateral)
     IERC20 public immutable usdt;
 
-    /// @notice Chainlink CRE price feed receiver (optional - can use manual rate)
-    PriceFeedReceiver public priceFeedReceiver;
+    /// @notice Converter contract - handles all rate logic
+    Converter public converter;
 
-    /// @notice Manual exchange rate (used if oracle disabled)
-    /// @dev Stored with 6 decimals. Example: 50e6 = 50 local currency per 1 USDT
-    uint256 public manualRate;
+    // ─────────────────────────────────────────────────────────────────────────
+    // Transaction Limits
+    // ─────────────────────────────────────────────────────────────────────────
 
-    /// @notice Whether to use Chainlink CRE oracle (true) or manual rate (false)
-    bool public useOracle;
-
-    /// @notice Minimum deposit/withdrawal amounts
+    /// @notice Minimum deposit amount (in USDT, 6 decimals)
     uint256 public minDeposit;
+
+    /// @notice Minimum withdrawal amount (in USDT, 6 decimals)
     uint256 public minWithdrawal;
 
-    /// @notice Maximum price age for oracle (seconds)
-    uint256 public maxPriceAge;
-
-    /// @notice Last manual rate update timestamp
-    uint256 public lastManualRateUpdate;
+    // ─────────────────────────────────────────────────────────────────────────
+    // Fee Configuration
+    // ─────────────────────────────────────────────────────────────────────────
 
     /// @notice Mint fee in basis points (e.g., 100 = 1%)
     uint256 public mintFeeBps;
@@ -65,198 +113,128 @@ contract LocalCurrencyToken is ERC20, AccessControl, Pausable, ReentrancyGuard {
     /// @notice Redeem fee in basis points (e.g., 100 = 1%)
     uint256 public redeemFeeBps;
 
-    /// @notice Total fees collected (in USDT)
-    uint256 public totalFeesCollected;
+    /// @notice Total fees collected (in USDT) - not yet withdrawn
+    uint256 public totalFeesToBeCollected;
 
     /// @notice Maximum allowed fee (10% = 1000 bps)
     uint256 public constant MAX_FEE_BPS = 1000;
 
-    // ============ Events ============
+    // ═══════════════════════════════════════════════════════════════════════════
+    // EVENTS
+    // ═══════════════════════════════════════════════════════════════════════════
 
-    event Minted(address indexed user, uint256 usdtAmount, uint256 localCurrencyAmount, uint256 fee);
-    event Redeemed(address indexed user, uint256 localCurrencyAmount, uint256 usdtAmount, uint256 fee);
-    event RateUpdated(uint256 oldRate, uint256 newRate, bool isOracle);
-    event OracleToggled(bool useOracle);
-    event PriceFeedUpdated(address indexed oldFeed, address indexed newFeed);
+    // ─────────────────────────────────────────────────────────────────────────
+    // Transaction Events
+    // ─────────────────────────────────────────────────────────────────────────
+
+    event Minted(
+        address indexed user, 
+        uint256 usdtAmount, 
+        uint256 localCurrencyAmount, 
+        uint256 fee
+    );
+    
+    event Redeemed(
+        address indexed user, 
+        uint256 localCurrencyAmount, 
+        uint256 usdtAmount, 
+        uint256 fee
+    );
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Configuration Events
+    // ─────────────────────────────────────────────────────────────────────────
+
+    event ConverterUpdated(address indexed oldConverter, address indexed newConverter);
     event MintFeeUpdated(uint256 oldFee, uint256 newFee);
     event RedeemFeeUpdated(uint256 oldFee, uint256 newFee);
     event FeesWithdrawn(address indexed recipient, uint256 amount);
+    event MinDepositUpdated(uint256 oldMin, uint256 newMin);
+    event MinWithdrawalUpdated(uint256 oldMin, uint256 newMin);
 
-    // ============ Errors ============
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ERRORS
+    // ═══════════════════════════════════════════════════════════════════════════
 
     error InvalidAddress();
     error InvalidAmount();
     error DepositBelowMinimum(uint256 amount, uint256 minimum);
     error WithdrawalBelowMinimum(uint256 amount, uint256 minimum);
     error InsufficientCollateral(uint256 required, uint256 available);
-    error StalePriceData(uint256 updatedAt, uint256 currentTime);
-    error InvalidPriceData();
-    error InvalidRate();
-    error InvalidPriceAge();
     error InvalidMinimumAmount();
     error FeeTooHigh(uint256 fee, uint256 maxFee);
     error NoFeesToWithdraw();
 
-    // ============ Constructor ============
+    // ═══════════════════════════════════════════════════════════════════════════
+    // CONSTRUCTOR
+    // ═══════════════════════════════════════════════════════════════════════════
 
     /**
+     * @notice Initialize the LocalCurrencyToken contract
+     * @dev All rate management is delegated to the Converter contract
+     * 
      * @param usdtAddress USDT token address
      * @param currencyName Name of local currency (e.g., "Egyptian Pound Digital")
      * @param currencySymbol Symbol (e.g., "EGPd")
-     * @param initialRate Initial exchange rate (6 decimals, e.g., 50e6 = 50 EGP per USDT)
-     * @param admin Admin address
-     * @param priceFeedReceiverAddress PriceFeedReceiver contract address (can be address(0) to use manual rate only)
+     * @param converterAddress Converter contract address (handles all rate logic)
+     * @param admin Admin address (receives all roles initially)
      */
     constructor(
         address usdtAddress,
         string memory currencyName,
         string memory currencySymbol,
-        uint256 initialRate,
-        address admin,
-        address priceFeedReceiverAddress
+        address converterAddress,
+        address admin
     ) ERC20(currencyName, currencySymbol) {
-        if (usdtAddress == address(0) || admin == address(0)) revert InvalidAddress();
-        if (initialRate == 0) revert InvalidRate();
+        if (usdtAddress == address(0) || converterAddress == address(0) || admin == address(0)) {
+            revert InvalidAddress();
+        }
 
         usdt = IERC20(usdtAddress);
-        manualRate = initialRate;
-
-        // Setup oracle (optional)
-        if (priceFeedReceiverAddress != address(0)) {
-            priceFeedReceiver = PriceFeedReceiver(priceFeedReceiverAddress);
-            useOracle = true;
-        } else {
-            useOracle = false; // Start with manual rate only
-        }
+        converter = Converter(converterAddress);
 
         // Setup roles
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _grantRole(ADMIN_ROLE, admin);
         _grantRole(PAUSER_ROLE, admin);
-        _grantRole(RATE_UPDATER_ROLE, admin);
 
         // Set defaults
         minDeposit = 1e6; // 1 USDT
         minWithdrawal = 1e6; // 1 USDT equivalent
-        maxPriceAge = 3600; // 1 hour
         mintFeeBps = 0; // 0% fee initially
         redeemFeeBps = 0; // 0% fee initially
-        totalFeesCollected = 0;
+        totalFeesToBeCollected = 0;
     }
 
-    // ============ Rate Functions ============
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MINT (DEPOSIT) FUNCTION
+    // ═══════════════════════════════════════════════════════════════════════════
 
     /**
-     * @dev Get current exchange rate (local currency per 1 USDT)
-     * @return rate Exchange rate with 6 decimals
+     * ┌─────────────────────────────────────────────────────────────────────────┐
+     * │ MINT - DEPOSIT USDT FOR LOCAL CURRENCY TOKENS                           │
+     * └─────────────────────────────────────────────────────────────────────────┘
+     * 
+     * @notice Deposit USDT and receive local currency tokens
+     * @dev Uses Converter.getExchangeRate(true, amount) to calculate output
+     * 
+     * @param usdtAmount Amount of USDT to deposit (6 decimals, before fees)
+     * @return localAmount Amount of local currency tokens received (18 decimals)
+     * 
+     * FLOW:
+     * ─────
+     * 1. Check minimum deposit requirement
+     * 2. Calculate and deduct mint fee
+     * 3. Get conversion rate from Converter (direction = true for mint)
+     * 4. Transfer USDT from user
+     * 5. Mint local currency tokens to user
      */
-    function getExchangeRate() public view returns (uint256 rate) {
-        if (useOracle) {
-            rate = _getOracleRate();
-        } else {
-            rate = manualRate;
-        }
-        return rate;
-    }
-
-    /**
-     * @dev Get the last price update timestamp
-     * @return timestamp The timestamp of the last price update
-     * @dev Returns oracle timestamp if using oracle, otherwise manual rate timestamp
-     */
-    function getLastPriceUpdate() public view returns (uint256 timestamp) {
-        if (useOracle && address(priceFeedReceiver) != address(0)) {
-            try priceFeedReceiver.getPrice() returns (uint224, uint32 priceTimestamp) {
-                return uint256(priceTimestamp);
-            } catch {
-                return lastManualRateUpdate;
-            }
-        }
-        return lastManualRateUpdate;
-    }
-
-    /**
-     * @dev Check if price data is stale
-     * @return isStale True if price is older than maxPriceAge
-     */
-    function isPriceStale() public view returns (bool isStale) {
-        uint256 lastUpdate = getLastPriceUpdate();
-        if (lastUpdate == 0) return true;
-        return (block.timestamp - lastUpdate) > maxPriceAge;
-    }
-
-    /**
-     * @dev Get rate from Chainlink CRE price feed receiver
-     * Falls back to manual rate if oracle data is stale or unavailable
-     */
-    function _getOracleRate() internal view returns (uint256) {
-        if (address(priceFeedReceiver) == address(0)) {
-            // Oracle not configured, use manual rate
-            return manualRate;
-        }
-
-        try priceFeedReceiver.getPrice() returns (uint224 price, uint32 timestamp) {
-            // Check staleness - if stale, fallback to manual rate
-            if (block.timestamp - timestamp > maxPriceAge) {
-                // Data is stale, use manual rate as fallback
-                return manualRate;
-            }
-
-            // Validate price data
-            if (price == 0) {
-                // Invalid price, use manual rate as fallback
-                return manualRate;
-            }
-
-            // Price from PriceFeedReceiver has 8 decimals (Chainlink standard)
-            // USDT has 6 decimals
-            // Convert to 6 decimals to match USDT decimals for internal use
-            uint256 rate = uint256(price) / 100; // 8 decimals -> 6 decimals (USDT decimals)
-
-            return rate;
-        } catch {
-            // Error fetching price, fallback to manual rate
-            return manualRate;
-        }
-    }
-
-    // ============ Preview Functions ============
-
-    /**
-     * @dev Preview how many local currency tokens you'll receive for USDT deposit
-     * @param usdtAmount Amount of USDT to deposit
-     * @return localAmount Amount of local currency tokens
-     */
-    function previewDeposit(uint256 usdtAmount) public view returns (uint256 localAmount) {
-        uint256 rate = getExchangeRate();
-        // localAmount = usdtAmount * rate
-        // Both have 6 decimals, result should have token decimals (18)
-        localAmount = (usdtAmount * rate * 1e18) / 1e12;
-        return localAmount;
-    }
-
-    /**
-     * @dev Preview how much USDT you'll receive for local currency redemption
-     * @param localAmount Amount of local currency tokens to redeem
-     * @return usdtAmount Amount of USDT
-     */
-    function previewRedeem(uint256 localAmount) public view returns (uint256 usdtAmount) {
-        uint256 rate = getExchangeRate();
-        // usdtAmount = localAmount / rate
-        // localAmount has 18 decimals, rate has 6, result should have 6
-        usdtAmount = (localAmount * 1e12) / (rate * 1e18);
-        return usdtAmount;
-    }
-
-    // ============ Mint (Deposit) Function ============
-
-    /**
-     * @dev Deposit USDT and receive local currency tokens
-     * @param usdtAmount Amount of USDT to deposit (before fees)
-     * @return localAmount Amount of local currency tokens received
-     */
-    function mint(uint256 usdtAmount) external whenNotPaused nonReentrant returns (uint256 localAmount) {
-
+    function mint(uint256 usdtAmount) 
+        external 
+        whenNotPaused 
+        nonReentrant 
+        returns (uint256 localAmount) 
+    {
         if (usdtAmount < minDeposit) {
             revert DepositBelowMinimum(usdtAmount, minDeposit);
         }
@@ -267,8 +245,8 @@ contract LocalCurrencyToken is ERC20, AccessControl, Pausable, ReentrancyGuard {
 
         uint256 balanceBefore = getTotalCollateral();
 
-        // Calculate local currency amount based on USDT after fee
-        localAmount = previewDeposit(usdtAfterFee);
+        // Get conversion from Converter: USDT -> Local Currency (direction = true)
+        localAmount = converter.getExchangeRate(true, usdtAfterFee);
 
         if (localAmount == 0) revert InvalidAmount();
 
@@ -281,7 +259,7 @@ contract LocalCurrencyToken is ERC20, AccessControl, Pausable, ReentrancyGuard {
         }
 
         // Track fees collected
-        totalFeesCollected += fee;
+        totalFeesToBeCollected += fee;
 
         // Mint local currency tokens to user
         _mint(msg.sender, localAmount);
@@ -291,19 +269,45 @@ contract LocalCurrencyToken is ERC20, AccessControl, Pausable, ReentrancyGuard {
         return localAmount;
     }
 
-    // ============ Burn (Redeem) Function ============
+    // ═══════════════════════════════════════════════════════════════════════════
+    // REDEEM (BURN) FUNCTION
+    // ═══════════════════════════════════════════════════════════════════════════
 
     /**
-     * @dev Redeem local currency tokens for USDT
-     * @param localAmount Amount of local currency tokens to redeem
-     * @return usdtAmountAfterFee Amount of USDT received (after fees)
+     * ┌─────────────────────────────────────────────────────────────────────────┐
+     * │ REDEEM - BURN LOCAL CURRENCY TOKENS FOR USDT                            │
+     * └─────────────────────────────────────────────────────────────────────────┘
+     * 
+     * @notice Redeem local currency tokens for USDT
+     * @dev Uses Converter.getExchangeRate(false, amount) to calculate output
+     * 
+     * @param localAmount Amount of local currency tokens to redeem (18 decimals)
+     * @return usdtAmountAfterFee Amount of USDT received (6 decimals, after fees)
+     * 
+     * FLOW:
+     * ─────
+     * 1. Validate amount and balance
+     * 2. Get conversion rate from Converter (direction = false for redeem)
+     * 3. Calculate and deduct redeem fee
+     * 4. Check minimum withdrawal requirement
+     * 5. Verify sufficient collateral
+     * 6. Burn local currency tokens
+     * 7. Transfer USDT to user
      */
-    function redeem(uint256 localAmount) external whenNotPaused nonReentrant returns (uint256 usdtAmountAfterFee) {
+    function redeem(uint256 localAmount) 
+        external 
+        whenNotPaused 
+        nonReentrant 
+        returns (uint256 usdtAmountAfterFee) 
+    {
         if (localAmount == 0) revert InvalidAmount();
         if (localAmount > balanceOf(msg.sender)) revert InvalidAmount();
 
-        // Calculate USDT amount (before fee)
-        uint256 usdtAmount = previewRedeem(localAmount);
+        // Get conversion from Converter: Local Currency -> USDT (direction = false)
+        uint256 usdtAmount = converter.getExchangeRate(false, localAmount);
+
+        // CRITICAL: Prevent precision loss - ensure non-zero input doesn't round to zero output
+        if (usdtAmount == 0) revert InvalidAmount();
 
         // Calculate fee (in USDT)
         uint256 fee = (usdtAmount * redeemFeeBps) / 10000;
@@ -320,7 +324,7 @@ contract LocalCurrencyToken is ERC20, AccessControl, Pausable, ReentrancyGuard {
         }
 
         // Track fees collected
-        totalFeesCollected += fee;
+        totalFeesToBeCollected += fee;
 
         // Burn local currency tokens
         _burn(msg.sender, localAmount);
@@ -333,84 +337,56 @@ contract LocalCurrencyToken is ERC20, AccessControl, Pausable, ReentrancyGuard {
         return usdtAmountAfterFee;
     }
 
-    // ============ Admin Functions ============
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ADMIN FUNCTIONS
+    // ═══════════════════════════════════════════════════════════════════════════
 
     /**
-     * @dev Update manual exchange rate
-     * @notice Can only be called when contract is paused for safety
-     * @param newRate New rate (6 decimals)
+     * @notice Update the Converter contract address
+     * @dev Can only be called when contract is paused for safety
+     * @param newConverter The new Converter contract address
      */
-    function updateManualRate(uint256 newRate) external onlyRole(RATE_UPDATER_ROLE) whenPaused {
-        if (newRate == 0) revert InvalidRate();
-
-        uint256 oldRate = manualRate;
-        manualRate = newRate;
-        lastManualRateUpdate = block.timestamp;
-
-        emit RateUpdated(oldRate, newRate, false);
-    }
-
-    /**
-     * @dev Update the PriceFeedReceiver address
-     * @notice Can only be called when contract is paused for safety
-     * @param newPriceFeedReceiver The new PriceFeedReceiver contract address
-     */
-    function setPriceFeedReceiver(address newPriceFeedReceiver) external onlyRole(ADMIN_ROLE) whenPaused {
-        if (newPriceFeedReceiver == address(0)) {
-            revert InvalidAddress();
-        }
-
-        address oldFeed = address(priceFeedReceiver);
-
+    function setConverter(address newConverter) external onlyRole(ADMIN_ROLE) whenPaused {
+        if (newConverter == address(0)) revert InvalidAddress();
+        
+        address oldConverter = address(converter);
+        
         // Check if it's the same address
-        if (newPriceFeedReceiver == oldFeed) {
-            revert InvalidAddress(); // Already set to this address
-        }
-
-        priceFeedReceiver = PriceFeedReceiver(newPriceFeedReceiver);
-
-        emit PriceFeedUpdated(oldFeed, newPriceFeedReceiver);
+        if (newConverter == oldConverter) revert InvalidAddress();
+        
+        converter = Converter(newConverter);
+        
+        emit ConverterUpdated(oldConverter, newConverter);
     }
 
     /**
-     * @dev Toggle between oracle and manual rate
-     * @notice Can only be called when contract is paused for safety
-     * @notice Flips the current useOracle state (true -> false, false -> true)
-     */
-    function toggleUseOracle() external onlyRole(ADMIN_ROLE) whenPaused {
-        useOracle = !useOracle;
-        emit OracleToggled(useOracle);
-    }
-
-    /**
-     * @dev Set max price age for oracle
-     * @param newAge Maximum age in seconds (must be greater than 0)
-     */
-    function setMaxPriceAge(uint256 newAge) external onlyRole(ADMIN_ROLE) {
-        if (newAge == 0) revert InvalidPriceAge();
-        maxPriceAge = newAge;
-    }
-
-    /**
-     * @dev Set minimum deposit
-     * @param newMin Minimum deposit amount (must be greater than 0)
+     * @notice Set minimum deposit amount
+     * @param newMin Minimum deposit amount in USDT (6 decimals, must be > 0)
      */
     function setMinDeposit(uint256 newMin) external onlyRole(ADMIN_ROLE) {
         if (newMin == 0) revert InvalidMinimumAmount();
+
+        uint256 oldMin = minDeposit;
         minDeposit = newMin;
+
+        emit MinDepositUpdated(oldMin, newMin);
     }
 
     /**
-     * @dev Set minimum withdrawal
-     * @param newMin Minimum withdrawal amount (must be greater than 0)
+     * @notice Set minimum withdrawal amount
+     * @param newMin Minimum withdrawal amount in USDT (6 decimals, must be > 0)
      */
     function setMinWithdrawal(uint256 newMin) external onlyRole(ADMIN_ROLE) {
         if (newMin == 0) revert InvalidMinimumAmount();
+
+        uint256 oldMin = minWithdrawal;
         minWithdrawal = newMin;
+
+        emit MinWithdrawalUpdated(oldMin, newMin);
     }
 
     /**
-     * @dev Set mint fee in basis points
+     * @notice Set mint fee in basis points
      * @param newFeeBps New fee (e.g., 100 = 1%, max 1000 = 10%)
      */
     function setMintFee(uint256 newFeeBps) external onlyRole(ADMIN_ROLE) {
@@ -425,7 +401,7 @@ contract LocalCurrencyToken is ERC20, AccessControl, Pausable, ReentrancyGuard {
     }
 
     /**
-     * @dev Set redeem fee in basis points
+     * @notice Set redeem fee in basis points
      * @param newFeeBps New fee (e.g., 100 = 1%, max 1000 = 10%)
      */
     function setRedeemFee(uint256 newFeeBps) external onlyRole(ADMIN_ROLE) {
@@ -440,21 +416,41 @@ contract LocalCurrencyToken is ERC20, AccessControl, Pausable, ReentrancyGuard {
     }
 
     /**
-     * @dev Withdraw collected fees (in USDT)
+     * ┌─────────────────────────────────────────────────────────────────────────┐
+     * │ WITHDRAW COLLECTED FEES                                                 │
+     * └─────────────────────────────────────────────────────────────────────────┘
+     * 
+     * @notice Withdraw collected fees (in USDT)
+     * @dev Used to pay for Chainlink CRE costs and protocol maintenance
+     * 
+     * ⚠️  CRITICAL SECURITY:
+     * ─────────────────────
+     * Ensures withdrawal doesn't compromise collateralization
+     * Must maintain sufficient collateral for all potential redemptions
+     * 
      * @param recipient Address to receive the fees
-     * @param amount Amount of fees to withdraw (must not exceed totalFeesCollected)
-     * @notice Used to pay for Chainlink CRE costs and protocol maintenance
+     * @param amount Amount of fees to withdraw (must not exceed totalFeesToBeCollected)
      */
-    function withdrawFees(address recipient, uint256 amount) external onlyRole(ADMIN_ROLE) nonReentrant {
+    function withdrawFees(address recipient, uint256 amount) 
+        external 
+        onlyRole(ADMIN_ROLE) 
+        nonReentrant 
+    {
         if (recipient == address(0)) revert InvalidAddress();
         if (amount == 0) revert InvalidAmount();
-        if (totalFeesCollected == 0) revert NoFeesToWithdraw();
-        if (amount > totalFeesCollected) {
-            revert InsufficientCollateral(amount, totalFeesCollected);
+        if (totalFeesToBeCollected == 0) revert NoFeesToWithdraw();
+        if (amount > totalFeesToBeCollected) {
+            revert InsufficientCollateral(amount, totalFeesToBeCollected);
         }
 
+   uint256 requiredCollateral = converter.getExchangeRate(false, totalSupply());
+        if (getNetCollateral() < requiredCollateral) {
+            revert InsufficientCollateral(requiredCollateral, getNetCollateral());
+        }
+
+
         // Deduct from tracked fees
-        totalFeesCollected -= amount;
+        totalFeesToBeCollected -= amount;
 
         // Transfer USDT fees to recipient
         usdt.safeTransfer(recipient, amount);
@@ -462,71 +458,96 @@ contract LocalCurrencyToken is ERC20, AccessControl, Pausable, ReentrancyGuard {
         emit FeesWithdrawn(recipient, amount);
     }
 
-    // ============ Emergency Functions ============
+    // ═══════════════════════════════════════════════════════════════════════════
+    // EMERGENCY FUNCTIONS
+    // ═══════════════════════════════════════════════════════════════════════════
 
+    /**
+     * @notice Pause all contract operations
+     * @dev Only PAUSER_ROLE can call this function
+     */
     function pause() external onlyRole(PAUSER_ROLE) {
         _pause();
     }
 
+    /**
+     * @notice Unpause contract operations
+     * @dev Only PAUSER_ROLE can call this function
+     */
     function unpause() external onlyRole(PAUSER_ROLE) {
         _unpause();
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // VIEW FUNCTIONS
+    // ═══════════════════════════════════════════════════════════════════════════
 
-    // ============ View Functions ============
+    // ─────────────────────────────────────────────────────────────────────────
+    // Collateral Functions
+    // ─────────────────────────────────────────────────────────────────────────
 
     /**
-     * @dev Get the total USDT balance in the contract (including fees)
-     * @return Total USDT balance
+     * @notice Get the total USDT balance in the contract (including fees)
+     * @return Total USDT balance (6 decimals)
      */
     function getTotalCollateral() public view returns (uint256) {
         return usdt.balanceOf(address(this));
     }
 
     /**
-     * @dev Get the actual collateral backing tokens (excluding fees)
-     * @return Net collateral amount
+     * @notice Get the actual collateral backing tokens (excluding fees)
+     * @return Net collateral amount (6 decimals)
      */
     function getNetCollateral() public view returns (uint256) {
         uint256 totalBalance = getTotalCollateral();
         // Fees are part of the balance but not backing tokens
-        return totalBalance > totalFeesCollected ? totalBalance - totalFeesCollected : 0;
+        return totalBalance > totalFeesToBeCollected 
+            ? totalBalance - totalFeesToBeCollected 
+            : 0;
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // Preview Functions
+    // ─────────────────────────────────────────────────────────────────────────
+
+
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Information Functions
+    // ─────────────────────────────────────────────────────────────────────────
+
     /**
-     * @dev Get contract info
+     * @notice Get comprehensive contract information
+     * @return currentRate Current exchange rate from Converter (6 decimals)
+     * @return totalSupply_ Total supply of local currency tokens (18 decimals)
+     * @return collateral Total USDT collateral including fees (6 decimals)
+     * @return netCollateral USDT collateral excluding fees (6 decimals)
+     * @return feesCollected Total fees collected in USDT (6 decimals)
+     * @return mintFee Mint fee in basis points
+     * @return redeemFee Redeem fee in basis points
+     * @return converterAddress Address of the Converter contract
      */
     function getInfo() external view returns (
         uint256 currentRate,
         uint256 totalSupply_,
         uint256 collateral,
         uint256 netCollateral,
-        uint256 collateralRatio,
-        bool usingOracle,
-        uint256 lastUpdate,
-        bool priceIsStale,
         uint256 feesCollected,
         uint256 mintFee,
-        uint256 redeemFee
+        uint256 redeemFee,
+        address converterAddress
     ) {
-        currentRate = getExchangeRate();
+        currentRate = converter.getExchangeRateView();
         totalSupply_ = totalSupply();
         collateral = getTotalCollateral();
         netCollateral = getNetCollateral();
 
-        // Collateral ratio: should always be ~100% (using net collateral)
-        if (totalSupply_ > 0) {
-            uint256 requiredCollateral = previewRedeem(totalSupply_);
-            collateralRatio = (netCollateral * 10000) / requiredCollateral; // Basis points
-        } else {
-            collateralRatio = 10000; // 100%
-        }
 
-        usingOracle = useOracle;
-        lastUpdate = getLastPriceUpdate();
-        priceIsStale = isPriceStale();
-        feesCollected = totalFeesCollected;
+        feesCollected = totalFeesToBeCollected;
         mintFee = mintFeeBps;
         redeemFee = redeemFeeBps;
+        converterAddress = address(converter);
     }
+
+
 }

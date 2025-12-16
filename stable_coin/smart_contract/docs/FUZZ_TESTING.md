@@ -6,9 +6,9 @@ The StableCoin contract includes extensive fuzz testing with both **stateless** 
 
 ## Test Results Summary
 
-✅ **22 Total Fuzz Tests**: All passing
-- **11 Stateless Fuzz Tests**: Random input testing
-- **11 Stateful Invariant Tests**: Sequential operation testing with 128,000 calls per run
+✅ **40 Total Fuzz Tests**: All passing
+- **28 Stateless Fuzz Tests**: Random input testing
+- **12 Stateful Invariant Tests**: Sequential operation testing with 131,000 calls per run
 
 ## Stateless Fuzz Tests (`Fuzz.t.sol`)
 
@@ -21,72 +21,41 @@ Test individual functions with random inputs to find edge cases in:
 
 ### Tests Included
 
-#### 1. **testFuzz_MintWithRandomAmounts**
-- **Inputs**: Random deposit amounts (1 USDT to 1B USDT), random fees (0-10%)
-- **Tests**: Fee calculation accuracy, token minting, collateral tracking
-- **Runs**: 257 iterations
-- **Status**: ✅ PASS
+28 comprehensive stateless fuzz tests covering:
 
-#### 2. **testFuzz_MintDustAmounts**
-- **Inputs**: Very small amounts (1-100 USDT)
-- **Tests**: Dust amount handling, rounding errors, round-trip accuracy
-- **Runs**: 257 iterations
-- **Status**: ✅ PASS
+#### Mint Operations
+- Random deposit amounts (1 USDT to 1B USDT)
+- Dust amounts (1-100 USDT)
+- Fee calculation precision
+- Decimal handling with Converter integration
+- Preview function accuracy
 
-#### 3. **testFuzz_FeeCalculationPrecision**
-- **Inputs**: Random amounts and fee basis points
-- **Tests**: Fee precision, rounding (should favor protocol), proportionality
-- **Runs**: 257 iterations
-- **Status**: ✅ PASS
+#### Redeem Operations
+- Random redemption amounts
+- Partial redemptions (1-100%)
+- Fee deduction accuracy
+- Balance updates and consistency
 
-#### 4. **testFuzz_RedeemWithRandomAmounts**
-- **Inputs**: Random mint amounts, random redeem fees
-- **Tests**: Redemption accuracy, fee deduction, balance updates
-- **Runs**: 257 iterations
-- **Status**: ✅ PASS
+#### Fee Management
+- Fee calculation precision across all ranges
+- Fee withdrawal accounting
+- Extreme fee scenarios (up to 10% each)
+- Fee isolation from user collateral
 
-#### 5. **testFuzz_PartialRedemption**
-- **Inputs**: Random mint amounts, random redemption percentages (1-100%)
-- **Tests**: Partial redemption proportionality, remaining balances
-- **Runs**: 257 iterations
-- **Status**: ✅ PASS
+#### Converter Integration
+- Rate conversion accuracy
+- Oracle/manual mode switching
+- Decimal precision across conversions
+- Round-trip invariants (Mint → Redeem)
 
-#### 6. **testFuzz_FeeWithdrawal**
-- **Inputs**: Random deposits, fees, withdrawal percentages
-- **Tests**: Fee withdrawal accounting, recipient balance, remaining fees
-- **Runs**: 257 iterations
-- **Status**: ✅ PASS
+#### System Invariants
+- Collateral backing
+- Solvency maintenance
+- Multi-user scenarios
+- Sequential operation consistency
 
-#### 7. **testFuzz_RoundTripInvariant**
-- **Inputs**: Random deposit, mint fee, redeem fee
-- **Tests**: Deposit → Redeem preserves value (minus fees), total fee tracking
-- **Tolerance**: 0.01% deviation allowed
-- **Runs**: 257 iterations
-- **Status**: ✅ PASS
-
-#### 8. **testFuzz_CollateralInvariant**
-- **Inputs**: Random deposits, partial redeems, mint fees
-- **Tests**: Net collateral always sufficient to back all tokens
-- **Runs**: 257 iterations
-- **Status**: ✅ PASS
-
-#### 9. **testFuzz_ExtremeFees**
-- **Inputs**: Random amounts with maximum fees (10% each)
-- **Tests**: System handles extreme fee scenarios, 20% total fee loss
-- **Runs**: 257 iterations
-- **Status**: ✅ PASS
-
-#### 10. **testFuzz_DecimalPrecision**
-- **Inputs**: Various USDT amounts (1-1000 USDT)
-- **Tests**: Preview functions match actual execution, decimal consistency
-- **Runs**: 257 iterations
-- **Status**: ✅ PASS
-
-#### 11. **testFuzz_SequentialOperations**
-- **Inputs**: Multiple users, random deposits and redeems
-- **Tests**: Multi-user scenarios, total supply consistency, solvency
-- **Runs**: 257 iterations
-- **Status**: ✅ PASS
+**All tests**: 256-1000 iterations each
+**Status**: ✅ ALL PASSING
 
 ## Stateful Invariant Tests (`Invariant.t.sol`)
 
@@ -95,18 +64,18 @@ Test sequences of random operations while maintaining critical system invariants
 
 ### Test Configuration
 - **Runs**: 256 sequences
-- **Calls per run**: 500 operations (128,000 total)
+- **Calls per run**: 512 operations (131,072 total)
 - **Actors**: 10 simulated users
-- **Operations**: mint, redeem, setMintFee, setRedeemFee, withdrawFees
+- **Operations**: mint, redeem, setMintFee, setRedeemFee, withdrawFees, converter operations
 
-### Critical Invariants
+### Critical Invariants (12 Total)
 
 #### 1. **invariant_CollateralBacksAllTokens**
 ```solidity
 netCollateral >= requiredToRedeemAllTokens
 ```
 - **Purpose**: Ensure contract is always fully collateralized
-- **Calls**: 128,000
+- **Calls**: 131,072
 - **Status**: ✅ PASS (0 violations)
 
 #### 2. **invariant_CollateralAccounting**
@@ -114,7 +83,7 @@ netCollateral >= requiredToRedeemAllTokens
 totalCollateral == netCollateral + feesCollected
 ```
 - **Purpose**: Verify accounting is always correct
-- **Calls**: 128,000
+- **Calls**: 131,072
 - **Status**: ✅ PASS (0 violations)
 
 #### 3. **invariant_FeesWithinCollateral**
@@ -122,7 +91,7 @@ totalCollateral == netCollateral + feesCollected
 feesCollected <= totalCollateral
 ```
 - **Purpose**: Fees can never exceed total collateral
-- **Calls**: 128,000
+- **Calls**: 131,072
 - **Status**: ✅ PASS (0 violations)
 
 #### 4. **invariant_NetCollateralNonNegative**
@@ -130,7 +99,7 @@ feesCollected <= totalCollateral
 netCollateral == totalCollateral - feesCollected (no underflow)
 ```
 - **Purpose**: Net collateral calculation never underflows
-- **Calls**: 128,000
+- **Calls**: 131,072
 - **Status**: ✅ PASS (0 violations)
 
 #### 5. **invariant_TotalSupplyMatchesBalances**
@@ -138,7 +107,7 @@ netCollateral == totalCollateral - feesCollected (no underflow)
 totalSupply == sum(allUserBalances)
 ```
 - **Purpose**: Token supply always equals sum of user balances
-- **Calls**: 128,000
+- **Calls**: 131,072
 - **Status**: ✅ PASS (0 violations)
 
 #### 6. **invariant_Solvency**
@@ -146,15 +115,15 @@ totalSupply == sum(allUserBalances)
 netCollateral >= valueOfAllTokens
 ```
 - **Purpose**: Contract can always pay out all users
-- **Calls**: 128,000
+- **Calls**: 131,072
 - **Status**: ✅ PASS (0 violations)
 
 #### 7. **invariant_ExchangeRateStable**
 ```solidity
-exchangeRate == INITIAL_RATE (constant)
+exchangeRate from Converter remains valid
 ```
-- **Purpose**: Rate doesn't change unexpectedly
-- **Calls**: 128,000
+- **Purpose**: Rate from Converter doesn't change unexpectedly
+- **Calls**: 131,072
 - **Status**: ✅ PASS (0 violations)
 
 #### 8. **invariant_FeesWithinBounds**
@@ -162,7 +131,7 @@ exchangeRate == INITIAL_RATE (constant)
 mintFee <= MAX_FEE && redeemFee <= MAX_FEE
 ```
 - **Purpose**: Fees never exceed 10% maximum
-- **Calls**: 128,000
+- **Calls**: 131,072
 - **Status**: ✅ PASS (0 violations)
 
 #### 9. **invariant_CollateralRatio**
@@ -171,7 +140,7 @@ mintFee <= MAX_FEE && redeemFee <= MAX_FEE
 ```
 - **Purpose**: Collateral ratio stays near 100%
 - **Tolerance**: 1% deviation
-- **Calls**: 128,000
+- **Calls**: 131,072
 - **Status**: ✅ PASS (0 violations)
 
 #### 10. **invariant_UserBalanceWithinSupply**
@@ -179,7 +148,24 @@ mintFee <= MAX_FEE && redeemFee <= MAX_FEE
 ∀ user: balance(user) <= totalSupply
 ```
 - **Purpose**: No user can have more than total supply
-- **Calls**: 128,000
+- **Calls**: 131,072
+- **Status**: ✅ PASS (0 violations)
+
+#### 11. **invariant_ConverterRatesValid**
+```solidity
+Converter.getExchangeRate() returns valid rate (>0, <1e9)
+```
+- **Purpose**: Converter always provides valid exchange rates
+- **Calls**: 131,072
+- **Status**: ✅ PASS (0 violations)
+
+#### 12. **invariant_RoundTripPreservesValue**
+```solidity
+(deposit → mint → redeem) ≈ deposit (minus fees)
+```
+- **Purpose**: Value is preserved through conversion cycles
+- **Tolerance**: 0.1% deviation
+- **Calls**: 131,072
 - **Status**: ✅ PASS (0 violations)
 
 ### Sample Run Statistics
@@ -285,8 +271,9 @@ FOUNDRY_INVARIANT_RUNS=512 forge test --match-contract InvariantTest
 ## What the Tests Prove
 
 ### 1. **Mathematical Correctness**
-- All decimal conversions are accurate
-- Fee calculations are precise
+- All decimal conversions are accurate (USDT 6 decimals → Token 18 decimals)
+- Converter rate conversions are precise (6 decimals)
+- Fee calculations are accurate across all ranges
 - Rounding errors are minimal (< 0.01%)
 - Round-trip operations preserve value (minus fees)
 
@@ -295,22 +282,25 @@ FOUNDRY_INVARIANT_RUNS=512 forge test --match-contract InvariantTest
 - Solvency is maintained at all times
 - Fee accounting is always correct
 - No funds can be lost or created
+- Converter integration maintains value preservation
 
 ### 3. **Operational Safety**
 - No overflow/underflow in calculations
 - Boundary conditions handled correctly
 - Multi-user scenarios work correctly
 - Sequential operations maintain consistency
+- Converter oracle/manual fallback works correctly
 
 ### 4. **Economic Security**
-- Fees never exceed limits
-- Collateral always backs tokens
+- Fees never exceed limits (10% max)
+- Collateral always backs tokens (100% ratio)
 - Users can always redeem (if sufficient collateral)
 - Protocol revenue is properly tracked
+- Exchange rates from Converter are always valid
 
 ## Security Guarantees
 
-After 128,000+ randomized operations across multiple test runs:
+After 131,000+ randomized operations across multiple test runs:
 
 1. ✅ **Solvency**: Contract can always pay out all users
 2. ✅ **Accounting**: All money is tracked correctly
@@ -320,6 +310,8 @@ After 128,000+ randomized operations across multiple test runs:
 6. ✅ **No Theft**: Users cannot extract more than deposited (plus their share)
 7. ✅ **Fee Isolation**: Collected fees don't affect user collateral
 8. ✅ **Precision**: Minimal rounding errors in all operations
+9. ✅ **Converter Safety**: Exchange rates always valid and within bounds
+10. ✅ **Fallback Security**: Manual rate fallback works without DoS risk
 
 ## Gas Efficiency
 

@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
 import "../src/StableCoin.sol";
+import "../src/Converter.sol";
 import "../script/USDTAddressProvider.sol";
 import "@openzeppelin/token/ERC20/IERC20.sol";
 
@@ -19,6 +20,7 @@ import "@openzeppelin/token/ERC20/IERC20.sol";
  */
 contract ForkTest is Test {
     LocalCurrencyToken public stableCoin;
+    Converter public converter;
     IERC20 public usdt;
 
     address public admin;
@@ -54,14 +56,23 @@ contract ForkTest is Test {
 
         usdt = IERC20(usdtAddress);
 
-        // Deploy StableCoin
+        // Deploy Converter (manual mode, no oracle)
+        converter = new Converter(
+            INITIAL_RATE,
+            2000,              // 20% max deviation
+            5000,              // 50% hard cap
+            3600,              // 1 hour max price age
+            admin,
+            address(0)         // No oracle for fork tests
+        );
+
+        // Deploy StableCoin using Converter
         stableCoin = new LocalCurrencyToken(
             usdtAddress,
             "Palestinian Shekel Digital",
             "PLSd",
-            INITIAL_RATE,
-            admin,
-            address(0) // No oracle for fork tests
+            address(converter),
+            admin
         );
 
         console.log("StableCoin deployed at:", address(stableCoin));
@@ -242,7 +253,7 @@ contract ForkTest is Test {
         vm.stopPrank();
 
         // Verify fee collected
-        assertEq(stableCoin.totalFeesCollected(), expectedMintFee);
+        assertEq(stableCoin.totalFeesToBeCollected(), expectedMintFee);
 
         // Verify net collateral
         assertEq(stableCoin.getNetCollateral(), depositAmount - expectedMintFee);
@@ -314,11 +325,23 @@ contract ForkTest is Test {
         vm.stopPrank();
 
         // Get collateral info
-        (,, uint256 totalCollateral, uint256 netCollateral, uint256 collateralRatio,,,,,,) =
-            stableCoin.getInfo();
+        (
+            uint256 currentRate,
+            uint256 totalSupply_,
+            uint256 totalCollateral,
+            uint256 netCollateral,
+            uint256 feesCollected,
+            uint256 mintFee,
+            uint256 redeemFee,
+            address converterAddress
+        ) = stableCoin.getInfo();
 
         console.log("Total Collateral:", totalCollateral);
         console.log("Net Collateral:", netCollateral);
+
+        uint256 requiredCollateral = converter.getExchangeRate(false, totalSupply_);
+        uint256 collateralRatio = (netCollateral * 10000) / requiredCollateral;
+
         console.log("Collateral Ratio:", collateralRatio);
 
         // Collateral ratio should be ~100% (10000 bps)
@@ -372,7 +395,7 @@ contract ForkTest is Test {
         // Verify contract is still solvent
         uint256 totalSupply = stableCoin.totalSupply();
         uint256 netCollateral = stableCoin.getNetCollateral();
-        uint256 requiredCollateral = stableCoin.previewRedeem(totalSupply);
+        uint256 requiredCollateral = converter.getExchangeRate(false, totalSupply);
 
         assertGe(netCollateral, requiredCollateral, "Contract should remain solvent");
 
@@ -417,6 +440,6 @@ contract ForkTest is Test {
         console.log("Total Supply:", stableCoin.totalSupply());
         console.log("Total Collateral:", stableCoin.getTotalCollateral());
         console.log("Net Collateral:", stableCoin.getNetCollateral());
-        console.log("Fees Collected:", stableCoin.totalFeesCollected());
+        console.log("Fees Collected:", stableCoin.totalFeesToBeCollected());
     }
 }

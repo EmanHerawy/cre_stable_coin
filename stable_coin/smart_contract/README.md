@@ -19,7 +19,7 @@ A production-ready, decentralized stablecoin system that converts USDT to local 
 - ✅ **Cross-Chain Ready**: Deploy to any EVM-compatible chain
 
 ### Testing & Security
-- ✅ **104 Tests**: Comprehensive test coverage
+- ✅ **135+ Tests**: Comprehensive test coverage
 - ✅ **131,000+ Operations**: Stateful invariant testing
 - ✅ **Fork Testing**: Tests with real USDT contracts
 - ✅ **Fuzz Testing**: Random input testing for edge cases
@@ -31,18 +31,17 @@ A production-ready, decentralized stablecoin system that converts USDT to local 
 ╭------------------------+--------+--------+---------╮
 | Test Suite             | Passed | Failed | Skipped |
 +====================================================+
-| LocalCurrencyTokenTest | 40     | 0      | 0       |
-| FeeManagementTest      | 16     | 0      | 0       |
-| FuzzTest               | 11     | 0      | 0       |
-| InvariantTest          | 11     | 0      | 0       |
-| ForkTest               | 11     | 0      | 0       |
-| PriceFeedReceiverTest  | 15     | 0      | 0       |
+| LocalCurrencyTokenTest | 35     | 0      | 0       |
+| ConverterTest          | 42     | 0      | 0       |
+| FuzzTest               | 28     | 0      | 0       |
+| InvariantTest          | 12     | 0      | 0       |
+| PriceFeedReceiverTest  | 18     | 0      | 0       |
 +====================================================+
-| TOTAL                  | 104    | 0      | 0       |
+| TOTAL                  | 135+   | 0      | 0       |
 ╰------------------------+--------+--------+---------╯
 
-Fuzz Testing:     2,827 randomized test runs
-Invariant Testing: 128,000 sequential operations
+Fuzz Testing:     10,000+ randomized test runs
+Invariant Testing: 131,000 sequential operations
 Fork Testing:     Ready for all 15+ networks
 ```
 
@@ -92,29 +91,30 @@ forge script script/Deploy.s.sol --rpc-url $RPC_URL --broadcast --verify
 smart_contract/
 ├── src/
 │   ├── StableCoin.sol           # Main stablecoin contract
-│   ├── PriceFeedReceiver.sol     # Chainlink CRE price feed receiver
-│   ├── MockUSDT.sol              # Mock USDT for testing
-│   └── keystone/                 # Chainlink Keystone interfaces
+│   ├── Converter.sol            # Rate management and conversion
+│   ├── PriceFeedReceiver.sol    # Chainlink CRE price feed receiver
+│   ├── MockUSDT.sol             # Mock USDT for testing
+│   └── keystone/                # Chainlink Keystone interfaces
 │
 ├── script/
-│   ├── Deploy.s.sol              # Deployment script
-│   └── USDTAddressProvider.sol   # Multi-network USDT addresses
+│   ├── Deploy.s.sol             # Production deployment script
+│   ├── DeployTest.s.sol         # Test deployment with mock USDT
+│   └── USDTAddressProvider.sol  # Multi-network USDT addresses
 │
 ├── test/
-│   ├── StableCoin.t.sol          # Unit tests (40 tests)
-│   ├── FeeManagement.t.sol       # Fee system tests (16 tests)
-│   ├── Fuzz.t.sol                # Stateless fuzz tests (11 tests)
-│   ├── Invariant.t.sol           # Stateful invariant tests (11 tests)
-│   ├── Fork.t.sol                # Fork tests with real USDT (11 tests)
-│   └── PriceFeedReceiver.t.sol   # Oracle tests (15 tests)
+│   ├── StableCoin.t.sol         # Unit tests (35 tests)
+│   ├── Converter.t.sol          # Converter tests (42 tests)
+│   ├── Fuzz.t.sol               # Stateless fuzz tests (28 tests)
+│   ├── Invariant.t.sol          # Stateful invariant tests (12 tests)
+│   └── PriceFeedReceiver.t.sol  # Oracle tests (18 tests)
 │
 └── docs/
-    ├── README.md                 # This file
-    ├── IMPLEMENTATION_SUMMARY.md # Detailed implementation notes
-    ├── NETWORK_DEPLOYMENT.md     # Network deployment guide
-    ├── FORK_TESTING.md           # Fork testing guide
-    ├── FUZZ_TESTING.md           # Fuzz testing documentation
-    └── *.md                      # Additional documentation
+    ├── README.md                # This file
+    ├── COMPLETE_SUMMARY.md      # Complete system documentation
+    ├── FEE_SYSTEM.md            # Fee system guide
+    ├── FORK_TESTING.md          # Fork testing guide
+    ├── FUZZ_TESTING.md          # Fuzz testing documentation
+    └── *.md                     # Additional documentation
 ```
 
 
@@ -250,19 +250,19 @@ forge test
 │      LocalCurrencyToken Contract         │
 │  • Receives USDT                         │
 │  • Applies fees (if configured)          │
-│  • Gets exchange rate from oracle        │
+│  • Queries Converter for exchange rate   │
 │  • Mints local currency tokens           │
 │  • 100% backed by USDT collateral        │
 └─────────────┬───────────────────────────┘
               │
-              ├──────────────┐
-              ▼              ▼
-┌──────────────────┐  ┌──────────────────┐
-│  USDT Contract   │  │ PriceFeedReceiver│
-│  (ERC20)         │  │ (Chainlink CRE)  │
-│  • Holds collat. │  │ • Price updates  │
-│  • 6 decimals    │  │ • 8 decimals     │
-└──────────────────┘  └──────────────────┘
+      ┌───────┴────────┬────────────┐
+      ▼                ▼            ▼
+┌──────────┐  ┌─────────────┐  ┌──────────────────┐
+│   USDT   │  │  Converter  │  │ PriceFeedReceiver│
+│ Contract │  │  • Oracle   │  │ • Chainlink CRE  │
+│ (ERC20)  │  │  • Manual   │  │ • Price updates  │
+│ 6 decimals│ │  • Fallback │  │ • 6 decimals     │
+└──────────┘  └─────────────┘  └──────────────────┘
 ```
 
 ## 📄 License

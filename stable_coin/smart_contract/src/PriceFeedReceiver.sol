@@ -38,7 +38,8 @@ contract PriceFeedReceiver is IReceiverTemplate, Ownable{
     error DuplicateValue();
     error NoDataPresent();
     error NotFound();
-
+    error InvalidTimestamp(uint256 oracleTimestamp,uint256 currentTimestamp);
+    error OutdatedReport(uint256 receivedTimestamp, uint256 latestTimestamp);
     // Events
     event KeystoneForwarderAdded(address indexed forwarder);
     event KeystoneForwarderRemoved(address indexed forwarder);
@@ -109,17 +110,22 @@ contract PriceFeedReceiver is IReceiverTemplate, Ownable{
     /// @notice Processes the validated price feed report from CRE
     /// @param report The ABI-encoded report data from the workflow
     /// @dev The report should contain: (uint224 price, uint32 timestamp)
-    function _processReport(bytes calldata report) internal override {
-        // Decode the report containing single price feed data
-        // Expected format: (uint224 price, uint32 timestamp)
-        (uint224 price, uint32 timestamp) = abi.decode(report, (uint224, uint32));
-
-        // Store the latest price
-        latestPrice = price;
-        latestTimestamp = timestamp;
-
-        emit PriceUpdated(price, timestamp);
+function _processReport(bytes calldata report) internal override {
+    (uint224 price, uint32 timestamp) = abi.decode(report, (uint224, uint32));
+    
+    // Add timestamp validation:
+    if (timestamp > block.timestamp) {
+        revert InvalidTimestamp(timestamp, block.timestamp);
     }
+    
+    if (timestamp < latestTimestamp) {
+        revert OutdatedReport(timestamp, latestTimestamp);
+    }
+    
+    latestPrice = price;
+    latestTimestamp = timestamp;
+    emit PriceUpdated(price, timestamp);
+}
 
     /// @notice Retrieves the stored price
     /// @return price The stored price (with 8 decimals, matching Chainlink standard)

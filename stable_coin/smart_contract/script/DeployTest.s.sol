@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Script.sol";
 import "../src/PriceFeedReceiver.sol";
+import "../src/Converter.sol";
 import "../src/StableCoin.sol";
 import "../test/StableCoin.t.sol"; // Import MockUSDT
 
@@ -61,15 +62,27 @@ contract DeployTestScript is Script {
         console.log("   Added workflow name:", vm.toString(abi.encodePacked(workflowName)));
         console.log("");
 
+        // Deploy Converter
+        console.log("4. Deploying Converter...");
+        Converter converter = new Converter(
+            50e6, // 50 EGP per USDT
+            2000, // 20% max deviation
+            5000, // 50% hard cap
+            3600, // 1 hour max price age
+            deployer,
+            address(priceFeedReceiver)
+        );
+        console.log("   Converter deployed at:", address(converter));
+        console.log("");
+
         // Deploy StableCoin
-        console.log("4. Deploying LocalCurrencyToken (EGPd)...");
+        console.log("5. Deploying LocalCurrencyToken (EGPd)...");
         LocalCurrencyToken stableCoin = new LocalCurrencyToken(
             address(usdt),
             "Egyptian Pound Digital",
             "EGPd",
-            50e6, // 50 EGP per USDT
-            deployer,
-            address(priceFeedReceiver)
+            address(converter),
+            deployer
         );
         console.log("   LocalCurrencyToken deployed at:", address(stableCoin));
         console.log("");
@@ -88,58 +101,30 @@ contract DeployTestScript is Script {
         console.log("  Workflow names count:", priceFeedReceiver.getExpectedWorkflowNameCount());
         console.log("");
 
+        console.log("Converter:");
+        (uint256 manualRate, , ) = converter.getManualPriceInfo();
+        console.log("  Manual Rate:", manualRate);
+        console.log("  Use Oracle:", converter.useOracle());
+        console.log("  Max Price Age:", converter.maxPriceAge());
+        console.log("  Max Deviation:", converter.maxPriceDeviationBps(), "bps");
+        console.log("");
+
         console.log("LocalCurrencyToken:");
         console.log("  Name:", stableCoin.name());
         console.log("  Symbol:", stableCoin.symbol());
         console.log("  USDT:", address(stableCoin.usdt()));
-        console.log("  PriceFeed:", address(stableCoin.priceFeedReceiver()));
-        console.log("  Manual Rate:", stableCoin.manualRate());
-        console.log("  Use Oracle:", stableCoin.useOracle());
+        console.log("  Converter:", address(stableCoin.converter()));
         console.log("  Min Deposit:", stableCoin.minDeposit());
         console.log("  Min Withdrawal:", stableCoin.minWithdrawal());
-        console.log("  Max Price Age:", stableCoin.maxPriceAge());
         console.log("  Paused:", stableCoin.paused());
-        console.log("  Total Supply:", stableCoin.totalSupply());
-        console.log("  Total Collateral:", stableCoin.getTotalCollateral());
         console.log("");
 
-        // Test basic functionality
-        console.log("=== Testing Basic Functionality ===");
+        console.log("=== Deployment Complete! ===");
         console.log("");
-
-        vm.startBroadcast(deployerPrivateKey);
-
-        // Test mint
-        console.log("5. Testing mint function...");
-
-        usdt.approve(address(stableCoin), 1000e6);
-        console.log("   Approved USDT");
-
-        // Switch to manual rate for testing
-        stableCoin.pause();
-        stableCoin.toggleUseOracle();
-        stableCoin.unpause();
-        console.log("   Switched to manual rate");
-
-        uint256 minted = stableCoin.mint(1000e6);
-        console.log("   Minted:", minted / 1e18);
-        console.log("   Collateral:", stableCoin.getTotalCollateral() / 1e6);
-        console.log("");
-
-        // Test redeem
-        console.log("6. Testing redeem function...");
-        uint256 redeemed = stableCoin.redeem(minted / 2);
-        console.log("   Redeemed:", minted / 2 / 1e18);
-        console.log("   Received USDT:", redeemed / 1e6);
-        console.log("");
-
-        vm.stopBroadcast();
-
-        console.log("=== Deployment Summary ===");
-        console.log("Mock USDT:", address(usdt));
-        console.log("PriceFeedReceiver:", address(priceFeedReceiver));
-        console.log("LocalCurrencyToken:", address(stableCoin));
-        console.log("");
-        console.log("Test deployment successful!");
+        console.log("Next steps:");
+        console.log("1. Mint some USDT to a test account");
+        console.log("2. Approve USDT spending");
+        console.log("3. Mint stablecoins");
+        console.log("4. Test redemption");
     }
 }
