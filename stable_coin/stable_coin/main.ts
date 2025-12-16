@@ -44,7 +44,7 @@ interface CoinGeckoResponse {
 }
 
 interface UsdtToIlsResult {
-	rate: number // USDT to ILS rate with 8 decimals
+	rate: number // USDT to ILS rate with 6 decimals
 	usdtToUsd: number
 	usdToIls: number
 	timestamp: number
@@ -81,8 +81,8 @@ const fetchUsdToIlsRate = (
 		throw new Error(`USD/ILS API request failed with status: ${response.statusCode}`)
 	}
 
-	const bodyArray = Object.values(response.body)
-	const responseText = Buffer.from(bodyArray).toString('utf-8')
+	const responseText = Buffer.from(response.body).toString('utf-8')
+
 	const data: ExchangeRateResponse = JSON.parse(responseText)
 
 	if (data.result !== 'success') {
@@ -153,7 +153,7 @@ const updatePriceFeed = (runtime: Runtime<Config>, priceData: UsdtToIlsResult): 
 	runtime.log(`Timestamp: ${priceData.timestamp}`)
 
 	// Encode the report data: (uint224 price, uint32 timestamp)
-	// The price is stored as uint224 with 8 decimals
+	// The price is stored as uint224 with 6 decimals
 	const price = BigInt(Math.floor(priceData.rate))
 	const timestamp = BigInt(Math.floor(priceData.timestamp))
 
@@ -251,14 +251,14 @@ const updateUsdtIlsPrice = (runtime: Runtime<Config>): string => {
 	// Now combine the aggregated results with math
 	const usdtToIlsRate = usdtToUsdData.rate * usdToIlsData.rate
 
-	// Convert to 8 decimals (Chainlink standard)
-	const rateWith8Decimals = Math.round(usdtToIlsRate * 1e8)
+	// Convert to 6 decimals (Chainlink standard)
+	const rateWith6Decimals = Math.round(usdtToIlsRate * 1e6)
 
 	const priceData: UsdtToIlsResult = {
-		rate: rateWith8Decimals,
+		rate: rateWith6Decimals,
 		usdtToUsd: usdtToUsdData.rate,
 		usdToIls: usdToIlsData.rate,
-		timestamp: Math.floor(Date.now() / 1000),
+		timestamp: Math.floor(runtime.now() as any / 1000),
 	}
 
 	runtime.log(`Price data calculated: ${safeJsonStringify(priceData)}`)
