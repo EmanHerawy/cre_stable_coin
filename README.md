@@ -280,9 +280,9 @@ The system consists of two main components:
 2. Fetches USD/LocalCurrency rate from ExchangeRate-API
 3. Aggregates results using median consensus
 4. Delivers to on-chain PriceFeedReceiver contract
-5. Runs every minute via cron trigger
+5. Runs on a configurable cron schedule (see `stable_coin/stable_coin/config.*.json`)
 
-### 2. Smart Contracts (`smart_contract/`)
+### 2. Smart Contracts (`stable_coin/smart_contract/`)
 **Purpose**: Manage stablecoin issuance, redemption, and collateral
 
 **Technology Stack**:
@@ -291,10 +291,13 @@ The system consists of two main components:
 - OpenZeppelin contracts
 
 **Components**:
-- **LocalCurrencyToken**: Main ERC20 stablecoin contract
-- **PriceFeedReceiver**: Receives oracle updates from Chainlink CRE
-- **USDTAddressProvider**: Multi-network USDT address resolver
-- **MockUSDT**: Testing token for networks without USDT
+- **LocalCurrencyToken** (`src/StableCoin.sol`): Main ERC20 stablecoin contract (18 decimals) backed by USDT collateral (6 decimals)
+- **Converter** (`src/Converter.sol`): Rate engine (6-decimal rates), oracle/manual mode, max-age + deviation checks, and fallback logic
+- **PriceFeedReceiver** (`src/PriceFeedReceiver.sol`): On-chain receiver for Chainlink CRE reports (validates forwarder/workflow/author/name)
+- **MockUSDT** (`src/MockUSDT.sol`): Mock USDT token (6 decimals) for local testing
+- **ExecutionProxy** (`src/ExecutionProxy.sol`): Minimal execution proxy utility contract
+
+> Note: Smart contracts live under `stable_coin/smart_contract/` in this repo.
 
 ---
 
@@ -375,8 +378,8 @@ npm install -g @chainlink/cre
 git clone <repository-url>
 cd stable_coin
 
-# Install workflow dependencies
-cd stable_coin
+# Install workflow dependencies (Chainlink CRE workflow)
+cd stable_coin/stable_coin
 bun install
 
 # Install smart contract dependencies
@@ -391,22 +394,23 @@ forge install
 ### Smart Contract Tests
 
 ```bash
-cd smart_contract
+cd stable_coin/smart_contract
 
-# Run all tests (104 tests)
+# Run all tests
 forge test
 
 # Run with detailed output
 forge test -vv
 
-# Run specific test suite
+# Run specific test suites
+forge test --match-contract LocalCurrencyTokenTest -vv
+forge test --match-contract ConverterTest -vv
 forge test --match-contract FeeManagementTest -vv
+forge test --match-contract PriceFeedReceiverTest -vv
 
-# Run fuzz tests (2,827 randomized runs)
-forge test --match-contract FuzzTest
-
-# Run invariant tests (128,000 operations)
-forge test --match-contract InvariantTest
+# Run fuzz / invariant suites
+forge test --match-contract FuzzRefactoredTest -vv
+forge test --match-contract InvariantRefactoredTest -vv
 
 # Run fork tests (with real USDT)
 forge test --match-contract ForkTest --fork-url https://eth.llamarpc.com -vv
@@ -415,26 +419,10 @@ forge test --match-contract ForkTest --fork-url https://eth.llamarpc.com -vv
 forge test --gas-report
 ```
 
-**Expected Output**:
-```
-╭------------------------+--------+--------+---------╮
-| Test Suite             | Passed | Failed | Skipped |
-+====================================================+
-| LocalCurrencyTokenTest | 40     | 0      | 0       |
-| FeeManagementTest      | 16     | 0      | 0       |
-| FuzzTest               | 11     | 0      | 0       |
-| InvariantTest          | 11     | 0      | 0       |
-| ForkTest               | 11     | 0      | 0       |
-| PriceFeedReceiverTest  | 15     | 0      | 0       |
-╰------------------------+--------+--------+---------╯
-
-Total: 104 tests passing
-```
-
 ### Chainlink CRE Workflow Tests
 
 ```bash
-cd stable_coin
+cd stable_coin/stable_coin
 
 # Simulate workflow locally
 cre workflow simulate ./stable_coin -T staging-settings --non-interactive --trigger-index 0
@@ -447,15 +435,15 @@ cre workflow simulate ./stable_coin -T staging-settings --non-interactive --trig
 ## 📚 Documentation
 
 ### 🏗️ Smart Contracts
-- **[Smart Contract README](smart_contract/README.md)** - Smart contract overview and testing
-- **[COMPLETE_SUMMARY.md](smart_contract/docs/COMPLETE_SUMMARY.md)** - Complete system overview
-- **[FEE_SYSTEM.md](smart_contract/docs/FEE_SYSTEM.md)** - Fee management system
-- **[FUZZ_TESTING.md](smart_contract/docs/FUZZ_TESTING.md)** - Comprehensive fuzz testing (2,827 runs)
-- **[FORK_TESTING.md](smart_contract/docs/FORK_TESTING.md)** - Fork testing with real USDT contracts
+- **[Smart Contract README](stable_coin/smart_contract/README.md)** - Smart contract overview and testing
+- **[COMPLETE_SUMMARY.md](stable_coin/smart_contract/docs/COMPLETE_SUMMARY.md)** - Complete system overview
+- **[FEE_SYSTEM.md](stable_coin/smart_contract/docs/FEE_SYSTEM.md)** - Fee management system
+- **[FUZZ_TESTING.md](stable_coin/smart_contract/docs/FUZZ_TESTING.md)** - Comprehensive fuzz testing
+- **[FORK_TESTING.md](stable_coin/smart_contract/docs/FORK_TESTING.md)** - Fork testing with real USDT contracts
 
 ### 🔮 Oracle & Workflow
 
-- **[USDT_ILS_WORKFLOW.md](USDT_ILS_WORKFLOW.md)** - Detailed workflow implementation
+- **[USDT_ILS_WORKFLOW.md](stable_coin/USDT_ILS_WORKFLOW.md)** - Detailed workflow implementation
 
 ---
 
@@ -495,7 +483,7 @@ anvil
 #### Deploy Smart Contracts
 ```bash
 # Terminal 2: Deploy to local network
-cd smart_contract
+cd stable_coin/smart_contract
 forge script script/DeployTest.s.sol --rpc-url http://localhost:8545 --broadcast -vvv
 ```
 
@@ -508,7 +496,7 @@ forge script script/DeployTest.s.sol --rpc-url http://localhost:8545 --broadcast
 #### Test the Workflow
 ```bash
 # Terminal 3: Run Chainlink CRE workflow
-cd stable_coin
+cd stable_coin/stable_coin
 cre workflow simulate ./stable_coin -T staging-settings --non-interactive --trigger-index 0
 ```
 
@@ -516,7 +504,7 @@ cre workflow simulate ./stable_coin -T staging-settings --non-interactive --trig
 
 #### Configure Environment
 ```bash
-cd smart_contract
+cd stable_coin/smart_contract
 
 # Create .env file
 cat > .env << 'EOF'
@@ -544,19 +532,26 @@ npm install viem wagmi
 
 ### Contract ABIs
 
-Located in:
-- `smart_contract/out/StableCoin.sol/LocalCurrencyToken.json`
-- `smart_contract/out/PriceFeedReceiver.sol/PriceFeedReceiver.json`
+Generate ABIs locally from the smart contracts project:
+
+```bash
+cd stable_coin/smart_contract
+forge build
+```
+
+Then copy the required ABI JSON(s) into your frontend (e.g. `./abis/`) and import them from there.
 
 ### Example: React + ethers.js
 
 ```typescript
 import { ethers } from 'ethers';
 import StableCoinABI from './abis/LocalCurrencyToken.json';
+import ConverterABI from './abis/Converter.json';
 import USDTABI from './abis/IERC20.json';
 
 // Contract addresses (from deployment)
 const STABLECOIN_ADDRESS = '0x...';
+const CONVERTER_ADDRESS = '0x...';
 const USDT_ADDRESS = '0xdAC17F958D2ee523a2206206994597C13D831ec7'; // Ethereum
 
 // Connect to wallet
@@ -565,6 +560,7 @@ const signer = await provider.getSigner();
 
 // Initialize contracts
 const stableCoin = new ethers.Contract(STABLECOIN_ADDRESS, StableCoinABI.abi, signer);
+const converter = new ethers.Contract(CONVERTER_ADDRESS, ConverterABI.abi, signer);
 const usdt = new ethers.Contract(USDT_ADDRESS, USDTABI, signer);
 
 // Mint stablecoins
@@ -577,12 +573,7 @@ async function mintTokens(usdtAmount: bigint) {
   const mintTx = await stableCoin.mint(usdtAmount);
   const receipt = await mintTx.wait();
 
-  // 3. Get minted amount from events
-  const mintEvent = receipt.logs.find(
-    log => log.topics[0] === ethers.id('Minted(address,uint256,uint256,uint256)')
-  );
-
-  return mintEvent;
+  return receipt;
 }
 
 // Redeem USDT
@@ -592,22 +583,10 @@ async function redeemTokens(tokenAmount: bigint) {
   return receipt;
 }
 
-// Get exchange rate
+// Get exchange rate (6 decimals) from Converter
 async function getExchangeRate() {
-  const rate = await stableCoin.getExchangeRate();
+  const rate = await converter.getExchangeRateView();
   return rate;
-}
-
-// Preview mint amount
-async function previewMint(usdtAmount: bigint) {
-  const tokens = await stableCoin.previewDeposit(usdtAmount);
-  return tokens;
-}
-
-// Preview redeem amount
-async function previewRedeem(tokenAmount: bigint) {
-  const usdt = await stableCoin.previewRedeem(tokenAmount);
-  return usdt;
 }
 
 // Get user balance
@@ -620,18 +599,14 @@ async function getBalance(address: string) {
 async function getInfo() {
   const info = await stableCoin.getInfo();
   return {
-    exchangeRate: info[0],
+    currentRate: info[0],
     totalSupply: info[1],
     totalCollateral: info[2],
     netCollateral: info[3],
-    collateralRatio: info[4],
-    minDeposit: info[5],
-    minWithdrawal: info[6],
-    useOracle: info[7],
-    paused: info[8],
-    feesCollected: info[9],
-    mintFeeBps: info[10],
-    redeemFeeBps: info[11],
+    feesCollected: info[4],
+    mintFeeBps: info[5],
+    redeemFeeBps: info[6],
+    converterAddress: info[7],
   };
 }
 ```
@@ -747,17 +722,21 @@ const provider = new ethers.JsonRpcProvider(RPC_URL);
 const stableCoin = new ethers.Contract(ADDRESS, ABI, provider);
 
 app.get('/api/rate', async (req, res) => {
-  const rate = await stableCoin.getExchangeRate();
-  res.json({ rate: rate.toString() });
+  const info = await stableCoin.getInfo();
+  res.json({ rate: info[0].toString() });
 });
 
 app.get('/api/info', async (req, res) => {
   const info = await stableCoin.getInfo();
   res.json({
-    exchangeRate: info[0].toString(),
+    currentRate: info[0].toString(),
     totalSupply: info[1].toString(),
     totalCollateral: info[2].toString(),
-    // ... etc
+    netCollateral: info[3].toString(),
+    feesCollected: info[4].toString(),
+    mintFeeBps: info[5].toString(),
+    redeemFeeBps: info[6].toString(),
+    converterAddress: info[7],
   });
 });
 
@@ -781,6 +760,7 @@ app.listen(3000);
 |   │   ├── workflow.yaml            # Workflow configuration
 |   │   ├── config.staging.json      # Staging settings
 |   │   ├── config.production.json   # Production settings
+|   │   ├── config.example.yaml      # Config template
 |   │   ├── package.json
 |   │
 |   ├── smart_contract/              # Solidity Smart Contracts
@@ -791,9 +771,11 @@ app.listen(3000);
 |   │   │   └── FORK_TESTING.md
 |   │   │
 |   │   ├── src/
-|   │   │   ├── StableCoin.sol       # Main stablecoin contract
-|   │   │   ├── PriceFeedReceiver.sol # Oracle receiver
-|   │   │   ├── MockUSDT.sol         # Test USDT
+|   │   │   ├── StableCoin.sol       # LocalCurrencyToken (stablecoin)
+|   │   │   ├── Converter.sol        # Rate engine (oracle/manual)
+|   │   │   ├── PriceFeedReceiver.sol # Chainlink CRE report receiver
+|   │   │   ├── MockUSDT.sol         # Mock USDT (6 decimals)
+|   │   │   ├── ExecutionProxy.sol   # Utility contract
 |   │   │   └── keystone/            # Chainlink interfaces
 |   │   │
 |   │   ├── script/
@@ -802,20 +784,21 @@ app.listen(3000);
 |   │   │   └── USDTAddressProvider.sol # Multi-network USDT
 |   │   │
 |   │   ├── test/
-|   │   │   ├── StableCoin.t.sol     # Unit tests (40)
-|   │   │   ├── FeeManagement.t.sol  # Fee tests (16)
-|   │   │   ├── Fuzz.t.sol           # Fuzz tests (11)
-|   │   │   ├── Invariant.t.sol      # Invariant tests (11)
-|   │   │   ├── Fork.t.sol           # Fork tests (11)
-|   │   │   └── PriceFeedReceiver.t.sol # Oracle tests (15)
+|   │   │   ├── StableCoin.t.sol
+|   │   │   ├── Converter.t.sol
+|   │   │   ├── FeeManagement.t.sol
+|   │   │   ├── Fuzz.t.sol
+|   │   │   ├── Invariant.t.sol
+|   │   │   ├── Fork.t.sol
+|   │   │   └── PriceFeedReceiver.t.sol
 |   │   │
 |   │   ├── foundry.toml
 |   │   └── README.md
 |   │
 |   │
 |
-|   ├── project.yml
-|   ├── secret.yml
+|   ├── project.yaml
+|   ├── secrets.yaml
 |   ├── README.md
 └── README.md                    # This file
 ```

@@ -162,13 +162,13 @@ Tests individual functions in isolation.
 
 ### Level 2: Fuzz Tests (Thorough - ~5s)
 ```bash
-forge test --match-contract FuzzTest
+forge test --match-contract FuzzRefactoredTest
 ```
 Tests with randomized inputs to find edge cases.
 
 ### Level 3: Invariant Tests (Comprehensive - ~30s)
 ```bash
-forge test --match-contract InvariantTest
+forge test --match-contract InvariantRefactoredTest
 ```
 Tests system invariants across 128,000 random operations.
 

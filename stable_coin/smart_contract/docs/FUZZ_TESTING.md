@@ -28,7 +28,7 @@ Test individual functions with random inputs to find edge cases in:
 - Dust amounts (1-100 USDT)
 - Fee calculation precision
 - Decimal handling with Converter integration
-- Preview function accuracy
+- Conversion accuracy via `Converter.getExchangeRate(true, amount)`
 
 #### Redeem Operations
 - Random redemption amounts
@@ -153,7 +153,7 @@ mintFee <= MAX_FEE && redeemFee <= MAX_FEE
 
 #### 11. **invariant_ConverterRatesValid**
 ```solidity
-Converter.getExchangeRate() returns valid rate (>0, <1e9)
+Converter.getExchangeRateView() returns a valid rate (>0, <1e9)
 ```
 - **Purpose**: Converter always provides valid exchange rates
 - **Calls**: 131,072
@@ -242,14 +242,14 @@ Redeem fee (bps):  568 (5.68%)
 
 ### Run Stateless Fuzz Tests
 ```bash
-forge test --match-contract FuzzTest -vv
+forge test --match-contract FuzzRefactoredTest -vv
 ```
 
 Expected output: 11/11 tests passing with ~257 runs each
 
 ### Run Stateful Invariant Tests
 ```bash
-forge test --match-contract InvariantTest -vv
+forge test --match-contract InvariantRefactoredTest -vv
 ```
 
 Expected output: 11/11 invariants maintained across 128,000 calls
@@ -262,10 +262,10 @@ forge test --match-path "test/Fuzz.t.sol" --match-path "test/Invariant.t.sol"
 ### Increase Fuzzing Depth
 ```bash
 # More iterations for stateless tests
-FOUNDRY_FUZZ_RUNS=1000 forge test --match-contract FuzzTest
+FOUNDRY_FUZZ_RUNS=1000 forge test --match-contract FuzzRefactoredTest
 
 # More sequences for invariant tests
-FOUNDRY_INVARIANT_RUNS=512 forge test --match-contract InvariantTest
+FOUNDRY_INVARIANT_RUNS=512 forge test --match-contract InvariantRefactoredTest
 ```
 
 ## What the Tests Prove
@@ -344,8 +344,8 @@ Add to CI pipeline:
 ```yaml
 - name: Run Fuzz Tests
   run: |
-    forge test --match-contract FuzzTest
-    forge test --match-contract InvariantTest
+    forge test --match-contract FuzzRefactoredTest
+    forge test --match-contract InvariantRefactoredTest
 ```
 
 ## Future Enhancements

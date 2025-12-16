@@ -23,8 +23,8 @@ stable_coin/
       ├── config.production.json     # Production configuration
       ├── config.example.yaml        # Configuration template
       └── USDT_ILS_WORKFLOW.md       # Detailed workflow documentation
-├── project.yml
-├── secret.yml
+├── project.yaml
+├── secrets.yaml
 └── README.md  #this file
 ```
 
@@ -59,7 +59,9 @@ cre workflow deploy ./stable_coin -T production-settings
 ```
 ## Schedule
 
-The workflow runs **every 1 minute** by default (configurable via cron schedule).
+The workflow runs on a cron schedule (configurable via `config.*.json`).
+
+The current default in this repo is `"*/30 * * * *"` (every 30 minutes).
 
 ## Configuration
 
@@ -76,7 +78,7 @@ Create or update your `config.json`:
 
 ```json
 {
-  "schedule": "*/1 * * * *",
+  "schedule": "*/30 * * * *",
   "priceFeedReceiverAddress": "0x...",
   "chainSelectorName": "ethereum-testnet-sepolia",
   "gasLimit": "500000"

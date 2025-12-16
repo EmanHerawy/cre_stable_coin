@@ -23,8 +23,8 @@ stable_coin/
       ├── config.production.json     # Production configuration
       ├── config.example.yaml        # Configuration template
       └── USDT_ILS_WORKFLOW.md       # Detailed workflow documentation
-├── project.yml
-├── secret.yml
+├── project.yaml
+├── secrets.yaml
 ├── USDT_ILS_WORKFLOW.md #this file
 └── README.md 
 ```
