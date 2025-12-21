@@ -1,0 +1,6 @@
+{
+  "schedule": "*/30 * * * *",
+  "priceFeedReceiverAddress": "0xAf2ECa71EA19E1B00113716CA6c284DAf524A6cd",
+  "chainSelectorName": "ethereum-mainnet",
+  "gasLimit": "500000"
+}
